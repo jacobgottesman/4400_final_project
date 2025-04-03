@@ -9,6 +9,7 @@ from tqdm import tqdm
 import pandas as pd
 import multiprocessing as mp
 from functools import partial
+import os
 
 def plot_route(latitude, longitude, map_filename="route_map.html", image_filename="route_map.png", plt_route=False, download_image=False):
     """
@@ -67,7 +68,7 @@ def plot_route(latitude, longitude, map_filename="route_map.html", image_filenam
     # Bottom-left (southwest)
     folium.CircleMarker(
         location=sw,
-        radius=1,
+        radius=.25,
         fill=True,
         fill_color="#FF00FF",  # Magenta
         color="#FF00FF",
@@ -78,7 +79,7 @@ def plot_route(latitude, longitude, map_filename="route_map.html", image_filenam
     # Top-left (northwest)
     folium.CircleMarker(
         location=[ne[0], sw[1]],
-        radius=1,
+        radius=.25,
         fill=True,
         fill_color="#00FFFF",  # Cyan
         color="#00FFFF",
@@ -89,7 +90,7 @@ def plot_route(latitude, longitude, map_filename="route_map.html", image_filenam
     # Bottom-right (southeast)
     folium.CircleMarker(
         location=[sw[0], ne[1]],
-        radius=1,
+        radius=.25,
         fill=True,
         fill_color="#FFFF00",  # Yellow
         color="#FFFF00",
@@ -100,7 +101,7 @@ def plot_route(latitude, longitude, map_filename="route_map.html", image_filenam
     # Top-right (northeast)
     folium.CircleMarker(
         location=ne,
-        radius=1,
+        radius=.25,
         fill=True,
         fill_color="#FF0000",  # Red
         color="#FF0000",
@@ -108,18 +109,16 @@ def plot_route(latitude, longitude, map_filename="route_map.html", image_filenam
         popup="NE"
     ).add_to(route_map)
 
-    if download_image:
-        # Capture the map as an image
-        img_data = route_map._to_png()
-        img = Image.open(io.BytesIO(img_data))
-        
-        # Find the colored corner markers and crop to the bounding box
-        cropped_img = find_markers_and_crop(img)
-        
-        # Save the cropped image
-        cropped_img.save(image_filename)
+    # Capture the map as an image
+    img_data = route_map._to_png()
+    img = Image.open(io.BytesIO(img_data))
 
-    return cropped_img, bounds_array
+    if download_image:
+        
+        # Save the image image
+        img.save(image_filename)
+
+    return img, bounds_array
 
 def find_color_locations(image, target_color):
     # Create a boolean mask where True indicates matching pixels
@@ -132,15 +131,15 @@ def find_color_locations(image, target_color):
     return list(zip(locations[0], locations[1]))
 
 
-def find_markers_and_crop(img):
+def find_markers(img):
     """
-    Find the colored corner markers in the image and crop to their bounding box.
+    Find the colored corner markers in the image and return their center coordinates.
     
     Args:
         img (PIL.Image): The original map image.
         
     Returns:
-        PIL.Image: The cropped image.
+        dict: Dictionary of marker centers and original image.
     """
     # Convert to RGB if image is RGBA
     if img.mode == 'RGBA':
@@ -162,7 +161,6 @@ def find_markers_and_crop(img):
     
     # Find each marker
     for color_name, color_rgb in colors.items():
-
         locs = find_color_locations(img_array, color_rgb)
 
         # Calculate the center of the marker
@@ -174,54 +172,65 @@ def find_markers_and_crop(img):
             print(f"Warning: Marker {color_name} not found.")
 
     # Check if all four markers were found
-    if len(marker_centers) == 4:
-        # Determine the bounding box
-        left = min(marker_centers["magenta"][0], marker_centers["cyan"][0])
-        top = min(marker_centers["cyan"][1], marker_centers["red"][1])
-        right = max(marker_centers["yellow"][0], marker_centers["red"][0])
-        bottom = max(marker_centers["magenta"][1], marker_centers["yellow"][1])
-        
-        # # Add a small margin (optional)
-        # margin = 10
-        # left = max(0, left - margin)
-        # top = max(0, top - margin)
-        # right = min(img.width, right + margin)
-        # bottom = min(img.height, bottom + margin)
-        
-        # Crop the image
-        cropped_img = img.crop((top, left, bottom, right))
-        return cropped_img
-    else:
+    if len(marker_centers) != 4:
         print(f"Warning: Not all markers were found. Found {len(marker_centers)} out of 4.")
-        return img  # Return the original image if not all markers were found
     
-def latlon_to_xy(lat, lon, img_size, bounds_array):
+    return {
+        "markers": marker_centers,
+        "image": img,
+        "image_size": img.size  # Store the original image size
+    }
+
+def latlon_to_xy(lat, lon, map_data, geo_bounds):
     """
-    Convert latitude/longitude to x,y coordinates on the cropped image.
+    Convert latitude/longitude to x,y coordinates on the original image.
     
     Args:
         lat (float): Latitude coordinate.
         lon (float): Longitude coordinate.
-        img_size (tuple): Width and height of the cropped image.
-        bounds_array (numpy.ndarray): Array containing SW and NE bounds.
+        map_data (dict): Dictionary containing marker centers and image size.
+        geo_bounds (dict): Dictionary with geographic bounds keyed by marker colors.
         
     Returns:
-        tuple: (x, y) coordinates on the cropped image.
+        tuple: (x, y) coordinates on the original image.
     """
-    # Extract bounds
-    min_lat, min_lon = bounds_array[0]
-    max_lat, max_lon = bounds_array[1]
+    markers = map_data["markers"]
     
-    # Calculate relative position within bounds (0 to 1)
+    # Check if we have all required markers
+    required_markers = ["magenta", "cyan", "yellow", "red"]
+    if not all(marker in markers for marker in required_markers):
+        return None
+    
+    # Get geographic bounds
+    min_lat, min_lon = geo_bounds[0]
+    max_lat, max_lon = geo_bounds[1]
+    
+    # Calculate relative position in geographic space (0 to 1)
     rel_x = (lon - min_lon) / (max_lon - min_lon)
     rel_y = 1 - (lat - min_lat) / (max_lat - min_lat)  # Invert Y (image coordinates increase downward)
     
-    # Map to image coordinates
-    img_width, img_height = img_size
-    x = int(rel_x * img_width)
-    y = int(rel_y * img_height)
+    # Get marker positions
+    sw_pos = markers["magenta"]
+    nw_pos = markers["cyan"]
+    se_pos = markers["yellow"]
+    ne_pos = markers["red"]
+    
+    # Apply bilinear interpolation
+    # First interpolate along top and bottom edge
+    top_x = nw_pos[0] + rel_x * (ne_pos[0] - nw_pos[0])
+    bottom_x = sw_pos[0] + rel_x * (se_pos[0] - sw_pos[0])
+    
+    # Then interpolate between top and bottom
+    x = int(top_x + rel_y * (bottom_x - top_x))
+    
+    # Similarly for y-coordinate
+    left_y = nw_pos[1] + rel_y * (sw_pos[1] - nw_pos[1])
+    right_y = ne_pos[1] + rel_y * (se_pos[1] - ne_pos[1])
+    
+    y = int(left_y + rel_x * (right_y - left_y))
     
     return (x, y)
+
 
 import math
 def haversine_distance(lat1, lon1, lat2, lon2):
@@ -293,12 +302,16 @@ def preprocess_route(row_tuple):
     route_map, bounds = plot_route(latitude, longitude, plt_route=False, download_image=True, 
                                  image_filename=f"image_data/map{idx}.png")  
 
+
+    map_data = find_markers(route_map)
+
+
     # Get the cropped image size
     image_dims = (route_map.width, route_map.height)
 
     route_xy = []
     for lat, lon in zip(latitude, longitude):
-        xy = latlon_to_xy(lat, lon, image_dims, bounds)
+        xy = latlon_to_xy(lat, lon, map_data, bounds)
         route_xy.append(xy)
 
     return bounds, route_xy, image_dims
@@ -310,6 +323,13 @@ def parallel_process(df, num_processes=None):
     
     # Convert DataFrame to list of (idx, row) tuples
     row_tuples = list(df.iterrows())
+
+    folder_name = "image_data"
+
+    # Check if the folder already exists
+    if not os.path.exists(folder_name):
+        # Create the folder
+        os.makedirs(folder_name)
     
     # Create a pool of workers with 'spawn' context for better compatibility
     ctx = mp.get_context('spawn')
@@ -329,3 +349,37 @@ def parallel_process(df, num_processes=None):
     df['image_dims'] = image_dims_list
     
     return df
+
+
+def draw_test_preprocess(df, idx):
+
+    row_tuple = list(df.iterrows())[idx]
+
+    idx, row = row_tuple
+    
+    latitude = row['latitude']
+    longitude = row['longitude']
+
+    # Use idx for the filename
+    route_map, bounds = plot_route(latitude, longitude, plt_route=True, download_image=False, 
+                                 image_filename=f"image_data/map{idx}.png")  
+
+
+    map_data = find_markers(route_map)
+
+
+    route_xy = []
+    for lat, lon in zip(latitude, longitude):
+        xy = latlon_to_xy(lat, lon, map_data, bounds)
+        route_xy.append(xy)
+
+
+    draw_img = route_map.copy()
+    draw = ImageDraw.Draw(draw_img)
+
+    # Draw the route points on the image
+    for x, y in route_xy:
+        draw.ellipse((y-1, x-1, y+1, x+1), fill="purple", outline="white")
+
+
+    draw_img.show()
