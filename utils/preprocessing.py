@@ -10,6 +10,46 @@ import pandas as pd
 import multiprocessing as mp
 from functools import partial
 import os
+import gc
+from selenium.webdriver.firefox.options import Options
+from html2image import Html2Image
+from folium.utilities import temp_html_filepath
+import re
+
+def to_png(map, delay=3):
+    """Export the HTML to byte representation of a PNG image.
+
+    Uses selenium to render the HTML and record a PNG. You may need to
+    adjust the `delay` time keyword argument if maps render without data or tiles.
+
+    Examples
+    --------
+    >>> m._to_png()
+    >>> m._to_png(time=10)  # Wait 10 seconds between render and snapshot.
+
+    """
+    if map._png_image is None:
+        from selenium import webdriver
+
+        options = webdriver.firefox.options.Options()
+        options.add_argument('--headless')
+        driver = webdriver.Firefox(options=options)
+
+
+        try:
+            html = map.get_root().render()
+            with temp_html_filepath(html) as fname:
+                # We need the tempfile to avoid JS security issues.
+                driver.get('file:///{path}'.format(path=fname))
+                driver.maximize_window()
+                time.sleep(delay)
+                png = driver.get_screenshot_as_png()
+                map._png_image = png
+        finally:
+            driver.quit()
+    return map._png_image
+
+
 
 def plot_route(latitude, longitude, map_filename="route_map.html", image_filename="route_map.png", plt_route=False, download_image=False):
     """
@@ -32,7 +72,7 @@ def plot_route(latitude, longitude, map_filename="route_map.html", image_filenam
         raise ValueError("Latitude and longitude lists must be non-empty and of the same length.")
 
     # Create a Folium map centered at the first location
-    route_map = folium.Map(location=[latitude[0], longitude[0]], zoom_start=14, tiles="OpenStreetMap")
+    route_map = folium.Map(location=[latitude[0], longitude[0]], zoom_start=14, tiles="OpenStreetMap", png_enabled = True)
 
     # Calculate the bounds with padding
     min_lat = min(latitude)
@@ -68,7 +108,7 @@ def plot_route(latitude, longitude, map_filename="route_map.html", image_filenam
     # Bottom-left (southwest)
     folium.CircleMarker(
         location=sw,
-        radius=.25,
+        radius=.5,
         fill=True,
         fill_color="#FF00FF",  # Magenta
         color="#FF00FF",
@@ -79,7 +119,7 @@ def plot_route(latitude, longitude, map_filename="route_map.html", image_filenam
     # Top-left (northwest)
     folium.CircleMarker(
         location=[ne[0], sw[1]],
-        radius=.25,
+        radius=.5,
         fill=True,
         fill_color="#00FFFF",  # Cyan
         color="#00FFFF",
@@ -90,7 +130,7 @@ def plot_route(latitude, longitude, map_filename="route_map.html", image_filenam
     # Bottom-right (southeast)
     folium.CircleMarker(
         location=[sw[0], ne[1]],
-        radius=.25,
+        radius=.5,
         fill=True,
         fill_color="#FFFF00",  # Yellow
         color="#FFFF00",
@@ -101,7 +141,7 @@ def plot_route(latitude, longitude, map_filename="route_map.html", image_filenam
     # Top-right (northeast)
     folium.CircleMarker(
         location=ne,
-        radius=.25,
+        radius=.5,
         fill=True,
         fill_color="#FF0000",  # Red
         color="#FF0000",
@@ -110,7 +150,11 @@ def plot_route(latitude, longitude, map_filename="route_map.html", image_filenam
     ).add_to(route_map)
 
     # Capture the map as an image
-    img_data = route_map._to_png()
+
+
+    img_data = to_png(route_map, 5)
+
+    # Convert the byte data to a PIL image
     img = Image.open(io.BytesIO(img_data))
 
     if download_image:
@@ -171,15 +215,36 @@ def find_markers(img):
         else:
             print(f"Warning: Marker {color_name} not found.")
 
-    # Check if all four markers were found
+    # Attempt to infer missing marker positions
+    def get(name):
+        return marker_centers.get(name)
+
+    # Fill missing SW (magenta)
+    if "magenta" not in marker_centers and get("cyan") and get("yellow"):
+        marker_centers["magenta"] = (get("cyan")[0], get("yellow")[1])
+
+    # Fill missing NW (cyan)
+    if "cyan" not in marker_centers and get("magenta") and get("red"):
+        marker_centers["cyan"] = (get("magenta")[0], get("red")[1])
+
+    # Fill missing SE (yellow)
+    if "yellow" not in marker_centers and get("red") and get("magenta"):
+        marker_centers["yellow"] = (get("red")[0], get("magenta")[1])
+
+    # Fill missing NE (red)
+    if "red" not in marker_centers and get("yellow") and get("cyan"):
+        marker_centers["red"] = (get("yellow")[0], get("cyan")[1])
+
+    # Final warning if still incomplete
     if len(marker_centers) != 4:
-        print(f"Warning: Not all markers were found. Found {len(marker_centers)} out of 4.")
-    
+        print(f"Warning: Could not recover all markers. Found {len(marker_centers)} out of 4.")
+
     return {
         "markers": marker_centers,
         "image": img,
         "image_size": img.size  # Store the original image size
     }
+
 
 def latlon_to_xy(lat, lon, map_data, geo_bounds):
     """
@@ -314,6 +379,9 @@ def preprocess_route(row_tuple):
         xy = latlon_to_xy(lat, lon, map_data, bounds)
         route_xy.append(xy)
 
+    del route_map, map_data
+    gc.collect()
+
     return bounds, route_xy, image_dims
 
 def parallel_process(df, num_processes=None):
@@ -335,10 +403,12 @@ def parallel_process(df, num_processes=None):
     ctx = mp.get_context('spawn')
     with ctx.Pool(processes=num_processes) as pool:
         # Process rows in parallel with progress bar
-        results = list(tqdm(
-            pool.imap(preprocess_route, row_tuples),
-            total=len(df)
-        ))
+        results = []
+        for result in tqdm(pool.imap(preprocess_route, row_tuples), total=len(df)):
+            results.append(result)
+            del result  # Free memory
+            gc.collect()
+        
     
     # Unpack results
     bounds_list, route_xy_list, image_dims_list = zip(*results)
