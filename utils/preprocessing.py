@@ -453,3 +453,71 @@ def draw_test_preprocess(df, idx):
 
 
     draw_img.show()
+
+def fix_route(row_tuple):
+    idx, row = row_tuple
+
+    try:
+        route_map = Image.open(f"image_data/map{idx}.png")
+
+    except:
+        
+        return None, None, None
+
+    
+    latitude = row['latitude']
+    longitude = row['longitude']
+
+    # Calculate the bounds with padding
+    min_lat = min(latitude)
+    max_lat = max(latitude)
+    min_lon = min(longitude)
+    max_lon = max(longitude)
+    
+    # Add a small padding to the bounds (around 5%)
+    lat_padding = (max_lat - min_lat) * 0.1
+    lon_padding = (max_lon - min_lon) * 0.1
+    
+    # Create bounds with padding
+    sw = [min_lat - lat_padding, min_lon - lon_padding]
+    ne = [max_lat + lat_padding, max_lon + lon_padding]
+    
+    # Store bounds as numpy array
+    bounds = np.array([sw, ne])
+
+    map_data = find_markers(route_map)
+
+    # Get the cropped image size
+    image_dims = (route_map.width, route_map.height)
+
+    route_xy = []
+    for lat, lon in zip(latitude, longitude):
+        xy = latlon_to_xy(lat, lon, map_data, bounds)
+        route_xy.append(xy)
+
+    del route_map, map_data
+    gc.collect()
+
+    return bounds, route_xy, image_dims
+
+
+def parallel_fix(df, num_processes=None):
+    if num_processes is None:
+        num_processes = mp.cpu_count()
+
+    row_tuples = list(df.iterrows())
+
+    folder_name = "image_data"
+    os.makedirs(folder_name, exist_ok=True)
+
+    ctx = mp.get_context('spawn')
+    with ctx.Pool(processes=num_processes) as pool:
+        results = list(tqdm(pool.imap(fix_route, row_tuples), total=len(df)))
+
+    bounds_list, route_xy_list, image_dims_list = zip(*results)
+
+    df['bounds'] = bounds_list
+    df['route_xy'] = route_xy_list
+    df['image_dims'] = image_dims_list
+
+    return df
