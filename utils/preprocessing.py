@@ -1,20 +1,13 @@
 import folium
-from selenium import webdriver
 import time
 from PIL import Image, ImageDraw
 import io
 import numpy as np
-import json
 from tqdm import tqdm
-import pandas as pd
 import multiprocessing as mp
-from functools import partial
 import os
 import gc
-from selenium.webdriver.firefox.options import Options
-from html2image import Html2Image
 from folium.utilities import temp_html_filepath
-import re
 
 def to_png(map, delay=3):
     """Export the HTML to byte representation of a PNG image.

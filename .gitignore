@@ -2,4 +2,6 @@ archive/**
 data/** 
 test_images/** 
 image_data/**
+**/testing.ipynb
 testing.ipynb
+preprocessing.ipynb
