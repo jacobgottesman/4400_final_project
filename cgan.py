@@ -12,8 +12,20 @@ from tqdm import tqdm
 import time
 import datetime
 
+def is_valid_tuple_list(item):
+    if not isinstance(item, list):
+        return False
+    if len(item) != 500:
+        return False
+    for t in item:
+        if not (isinstance(t, tuple) and len(t) == 2):
+            return False
+        if not all(isinstance(x, int) for x in t):
+            return False
+    return True
+    
 class RunningRouteDataset(Dataset):
-    def __init__(self, csv_path, img_dir, transform=None, verbose=False):
+    def __init__(self, csv_path, img_dirs, transform=None, verbose=False):
         """
         Dataset for running routes and map images
         
@@ -25,7 +37,9 @@ class RunningRouteDataset(Dataset):
         """
         print(f"Loading dataset from {csv_path}...")
         self.data = pd.read_csv(csv_path)
-        self.img_dir = img_dir
+        self.data['route_xy'] = self.data['route_xy'].apply(eval)
+        self.data = self.data.iloc[0:500, :]
+        self.img_dirs = img_dirs
         self.transform = transform
         self.verbose = verbose
         
@@ -38,6 +52,8 @@ class RunningRouteDataset(Dataset):
         )
         print("Dataset preparation complete!")
         
+
+    
     def __len__(self):
         return len(self.data)
     
@@ -49,12 +65,16 @@ class RunningRouteDataset(Dataset):
         if self.verbose:
             print(f"Loading image for index {idx}")
         
-        img_id = idx 
+        img_id = row['index']
         
         if self.verbose:
             print(f"Image ID: {img_id}")
         
-        img_path = os.path.join(self.img_dir, f"map{img_id}.png")
+        if img_id > 50425:
+            img_path = os.path.join(self.img_dirs[1], f"map{img_id}.png")
+        else:
+            img_path = os.path.join(self.img_dirs[0], f"map{img_id}.png")
+
         image = Image.open(img_path).convert('RGB')
         
         if self.transform:
@@ -452,9 +472,10 @@ def train_cgan(data_loader, num_epochs=100, lr=0.0002, beta1=0.5, beta2=0.999,
             # Save a sample of generated routes
             print("Generating sample routes...")
             with torch.no_grad():
-                sample_maps = real_maps[:4]  # Take first 4 maps from last batch
-                sample_conditions = conditions[:4]
-                sample_noise = torch.randn(4, 128).to(device)
+                num_examples = min(4, batch_size)
+                sample_maps = real_maps[:num_examples]  # Take first 4 maps from last batch
+                sample_conditions = conditions[:num_examples]
+                sample_noise = torch.randn(num_examples, 128).to(device)
                 sample_routes = generator(sample_maps, sample_conditions, sample_noise)
                 
                 # Visualize and save sample routes
@@ -484,8 +505,11 @@ def visualize_routes(maps, routes, save_path=None):
     
     for i, (map_img, route) in enumerate(zip(maps, routes)):
         # Convert map from tensor to numpy for visualization
+        # map_np = map_img.cpu().permute(1, 2, 0).numpy()
+        # map_np = (map_np * 0.5) + 0.5  # Unnormalize if using normalization
+
         map_np = map_img.cpu().permute(1, 2, 0).numpy()
-        map_np = (map_np * 0.5) + 0.5  # Unnormalize if using normalization
+        print(map_np.shape)
         
         # Convert route from tensor to numpy
         route_np = route.cpu().numpy()
@@ -494,7 +518,8 @@ def visualize_routes(maps, routes, save_path=None):
         axes[i].imshow(map_np)
         
         # Overlay the route
-        axes[i].plot(route_np[:, 0] * map_np.shape[1], route_np[:, 1] * map_np.shape[0], 'r-', linewidth=2)
+        # axes[i].plot(route_np[:, 0] * map_np.shape[1], route_np[:, 1] * map_np.shape[0], 'r-', linewidth=2)
+        axes[i].plot(route_np[:, 1]* map_np.shape[0], route_np[:, 0] * map_np.shape[1], 'r-', linewidth=1)
         
         axes[i].set_title(f"Generated Route {i+1}")
         axes[i].axis('off')
@@ -521,14 +546,15 @@ def main():
     print(f"{'-'*80}")
     
     # Configuration
-    data_path = "data/processed_routes_0_25000.csv"
-    img_dir = "images0_25000"
+    data_path = "data/processed_combined.csv"
+    img_dir1 = "image_data/images0_25000"
+    img_dir2 = "image_data"
     batch_size = 16
     num_epochs = 100
     
     print(f"Configuration:")
     print(f"- Data: {data_path}")
-    print(f"- Images: {img_dir}")
+    # print(f"- Images: {img_dir}")
     print(f"- Batch size: {batch_size}")
     print(f"- Epochs: {num_epochs}")
     print(f"{'-'*80}")
@@ -541,7 +567,7 @@ def main():
     ])
     
     # Create dataset and dataloader
-    dataset = RunningRouteDataset(data_path, img_dir, transform=transform, verbose=False)
+    dataset = RunningRouteDataset(data_path, [img_dir1, img_dir2], transform=transform, verbose=False)
     
     print(f"Creating data loader with {len(dataset)} samples")
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
