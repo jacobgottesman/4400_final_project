@@ -9,10 +9,11 @@ import numpy as np
 import os
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-
+import time
+import datetime
 
 class RunningRouteDataset(Dataset):
-    def __init__(self, csv_path, img_dir, transform=None):
+    def __init__(self, csv_path, img_dir, transform=None, verbose=False):
         """
         Dataset for running routes and map images
         
@@ -20,17 +21,22 @@ class RunningRouteDataset(Dataset):
             csv_path: Path to CSV file with metadata and route information
             img_dir: Directory containing map images
             transform: Transforms to apply to images
+            verbose: Whether to print verbose logs during data loading
         """
+        print(f"Loading dataset from {csv_path}...")
         self.data = pd.read_csv(csv_path)
         self.img_dir = img_dir
         self.transform = transform
+        self.verbose = verbose
         
+        print(f"Processing heart rate data for {len(self.data)} routes...")
         # Preprocess heart_rate data
         self.data['avg_heart_rate'] = self.data['heart_rate'].apply(
             lambda x: np.mean(eval(x)) if isinstance(x, str) else (
                 np.mean(x) if isinstance(x, list) else x
             )
         )
+        print("Dataset preparation complete!")
         
     def __len__(self):
         return len(self.data)
@@ -40,11 +46,13 @@ class RunningRouteDataset(Dataset):
         row = self.data.iloc[idx]
         
         # Load image
-        print(f"Loading image for index {idx}")
+        if self.verbose:
+            print(f"Loading image for index {idx}")
         
-        img_id = 50000 + idx 
-        print(f"Image ID: {img_id}")
+        img_id = idx 
         
+        if self.verbose:
+            print(f"Image ID: {img_id}")
         
         img_path = os.path.join(self.img_dir, f"map{img_id}.png")
         image = Image.open(img_path).convert('RGB')
@@ -70,7 +78,6 @@ class RunningRouteDataset(Dataset):
             'route': route_xy,
             'conditions': conditions
         }
-
 
 class MapImageEncoder(nn.Module):
     def __init__(self):
@@ -276,21 +283,23 @@ def weights_init(m):
         if m.bias is not None:
             nn.init.constant_(m.bias.data, 0)
 
-
 def train_cgan(data_loader, num_epochs=100, lr=0.0002, beta1=0.5, beta2=0.999, 
                device='cuda', save_interval=10, save_dir='models'):
     """
-    Train the CGAN model
+    Train the CGAN model with improved progress logging
     """
     # Initialize models
+    print("Initializing generator and discriminator models...")
     generator = Generator().to(device)
     discriminator = Discriminator().to(device)
     
     # Apply weight initialization
+    print("Applying weight initialization...")
     generator.apply(weights_init)
     discriminator.apply(weights_init)
     
     # Setup optimizers
+    print("Setting up optimizers...")
     optimizer_G = optim.Adam(generator.parameters(), lr=lr, betas=(beta1, beta2))
     optimizer_D = optim.Adam(discriminator.parameters(), lr=lr, betas=(beta1, beta2))
     
@@ -304,9 +313,30 @@ def train_cgan(data_loader, num_epochs=100, lr=0.0002, beta1=0.5, beta2=0.999,
     # Ensure save directory exists
     os.makedirs(save_dir, exist_ok=True)
     
+    print(f"Starting training for {num_epochs} epochs...")
+    start_time = time.time()
+    
+    # Calculate total number of batches
+    total_batches = len(data_loader)
+    
     # Training loop
     for epoch in range(num_epochs):
-        for i, batch in enumerate(tqdm(data_loader)):
+        epoch_start_time = time.time()
+        
+        # Initialize epoch metrics
+        epoch_g_loss = 0.0
+        epoch_d_loss = 0.0
+        epoch_aux_loss = 0.0
+        
+        # Progress bar for this epoch
+        progress_bar = tqdm(
+            enumerate(data_loader), 
+            total=total_batches,
+            desc=f"Epoch {epoch+1}/{num_epochs}",
+            leave=True
+        )
+        
+        for i, batch in progress_bar:
             # Get batch data
             real_maps = batch['image'].to(device)
             real_routes = batch['route'].to(device)
@@ -381,15 +411,46 @@ def train_cgan(data_loader, num_epochs=100, lr=0.0002, beta1=0.5, beta2=0.999,
             losses['D'].append(d_loss.item())
             losses['aux'].append(aux_g_loss.item())
             
-        # Print status
-        print(f"[Epoch {epoch}/{num_epochs}] [D loss: {d_loss.item():.4f}] [G loss: {g_loss.item():.4f}] [Aux loss: {aux_g_loss.item():.4f}]")
+            # Update epoch losses
+            epoch_g_loss += g_loss.item()
+            epoch_d_loss += d_loss.item()
+            epoch_aux_loss += aux_g_loss.item()
+            
+            # Update progress bar with current batch losses
+            progress_bar.set_postfix({
+                'G': f"{g_loss.item():.4f}",
+                'D': f"{d_loss.item():.4f}",
+                'Aux': f"{aux_g_loss.item():.4f}"
+            })
+        
+        # Calculate average epoch losses
+        avg_g_loss = epoch_g_loss / total_batches
+        avg_d_loss = epoch_d_loss / total_batches
+        avg_aux_loss = epoch_aux_loss / total_batches
+        
+        # Calculate epoch time
+        epoch_time = time.time() - epoch_start_time
+        
+        # Calculate estimated time remaining
+        avg_epoch_time = (time.time() - start_time) / (epoch + 1)
+        epochs_remaining = num_epochs - (epoch + 1)
+        est_time_remaining = avg_epoch_time * epochs_remaining
+        est_time_str = str(datetime.timedelta(seconds=int(est_time_remaining)))
+        
+        # Print epoch summary
+        print(f"\n{'-'*80}")
+        print(f"Epoch {epoch+1}/{num_epochs} completed in {epoch_time:.2f} seconds")
+        print(f"Avg losses - Generator: {avg_g_loss:.4f}, Discriminator: {avg_d_loss:.4f}, Auxiliary: {avg_aux_loss:.4f}")
+        print(f"Estimated time remaining: {est_time_str} (completion around {datetime.datetime.now() + datetime.timedelta(seconds=est_time_remaining):%Y-%m-%d %H:%M:%S})")
         
         # Save models periodically
         if epoch % save_interval == 0 or epoch == num_epochs - 1:
+            print(f"Saving model checkpoints for epoch {epoch+1}...")
             torch.save(generator.state_dict(), f"{save_dir}/generator_{epoch}.pt")
             torch.save(discriminator.state_dict(), f"{save_dir}/discriminator_{epoch}.pt")
             
             # Save a sample of generated routes
+            print("Generating sample routes...")
             with torch.no_grad():
                 sample_maps = real_maps[:4]  # Take first 4 maps from last batch
                 sample_conditions = conditions[:4]
@@ -397,7 +458,17 @@ def train_cgan(data_loader, num_epochs=100, lr=0.0002, beta1=0.5, beta2=0.999,
                 sample_routes = generator(sample_maps, sample_conditions, sample_noise)
                 
                 # Visualize and save sample routes
-                visualize_routes(sample_maps, sample_routes, f"{save_dir}/sample_epoch_{epoch}.png")
+                sample_path = f"{save_dir}/sample_epoch_{epoch}.png"
+                visualize_routes(sample_maps, sample_routes, sample_path)
+                print(f"Sample routes saved to {sample_path}")
+    
+    # Calculate total training time
+    total_time = time.time() - start_time
+    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+    
+    print(f"{'-'*80}")
+    print(f"Training completed in {total_time_str}")
+    print(f"Final losses - Generator: {avg_g_loss:.4f}, Discriminator: {avg_d_loss:.4f}, Auxiliary: {avg_aux_loss:.4f}")
     
     return generator, discriminator, losses
 
@@ -447,12 +518,20 @@ def main():
         device = torch.device("cpu")
     
     print(f"Using device: {device}")
+    print(f"{'-'*80}")
     
     # Configuration
-    data_path = "data/processed_routes_50000_75000.csv"
-    img_dir = "image_data"
+    data_path = "data/processed_routes_0_25000.csv"
+    img_dir = "images0_25000"
     batch_size = 16
     num_epochs = 100
+    
+    print(f"Configuration:")
+    print(f"- Data: {data_path}")
+    print(f"- Images: {img_dir}")
+    print(f"- Batch size: {batch_size}")
+    print(f"- Epochs: {num_epochs}")
+    print(f"{'-'*80}")
     
     # Image transformations
     transform = transforms.Compose([
@@ -462,10 +541,13 @@ def main():
     ])
     
     # Create dataset and dataloader
-    dataset = RunningRouteDataset(data_path, img_dir, transform=transform)
+    dataset = RunningRouteDataset(data_path, img_dir, transform=transform, verbose=False)
+    
+    print(f"Creating data loader with {len(dataset)} samples")
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
     
     # Train the model
+    print(f"{'-'*80}")
     generator, discriminator, losses = train_cgan(
         dataloader, 
         num_epochs=num_epochs, 
@@ -474,10 +556,12 @@ def main():
     )
     
     # Save final models
+    print("Saving final models...")
     torch.save(generator.state_dict(), "models/generator_final.pt")
     torch.save(discriminator.state_dict(), "models/discriminator_final.pt")
     
     # Plot losses
+    print("Generating loss plot...")
     plt.figure(figsize=(10, 5))
     plt.plot(losses['G'], label='Generator Loss')
     plt.plot(losses['D'], label='Discriminator Loss')
@@ -485,8 +569,13 @@ def main():
     plt.xlabel('Iterations')
     plt.ylabel('Loss')
     plt.legend()
-    plt.savefig("models/training_losses.png")
-    plt.show()
+    
+    loss_plot_path = "models/training_losses.png"
+    plt.savefig(loss_plot_path)
+    print(f"Loss plot saved to {loss_plot_path}")
+    
+    print(f"{'-'*80}")
+    print("Training complete!")
 
 
 if __name__ == "__main__":
