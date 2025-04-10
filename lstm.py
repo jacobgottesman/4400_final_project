@@ -13,7 +13,7 @@ import time
 import datetime
 
 class RunningRouteDataset(Dataset):
-    def __init__(self, csv_path, img_dirs, transform=None, verbose=False):
+    def __init__(self, csv_path, img_dirs, transform=None, verbose=False, local_map_size=128):
         """
         Dataset for running routes and map images
         
@@ -22,6 +22,7 @@ class RunningRouteDataset(Dataset):
             img_dirs: List of directories containing map images
             transform: Transforms to apply to images
             verbose: Whether to print verbose logs during data loading
+            local_map_size: Size of the local map crop around current point
         """
         print(f"Loading dataset from {csv_path}...")
         self.data = pd.read_csv(csv_path)
@@ -30,6 +31,7 @@ class RunningRouteDataset(Dataset):
         self.img_dirs = img_dirs
         self.transform = transform
         self.verbose = verbose
+        self.local_map_size = local_map_size
         
         print(f"Processing heart rate data for {len(self.data)} routes...")
         # Preprocess heart_rate data
@@ -43,6 +45,15 @@ class RunningRouteDataset(Dataset):
     def __len__(self):
         return len(self.data)
     
+    def load_full_map(self, img_id):
+        """Load the full map image for a given image ID"""
+        if img_id > 50425:
+            img_path = os.path.join(self.img_dirs[1], f"map{img_id}.png")
+        else:
+            img_path = os.path.join(self.img_dirs[0], f"map{img_id}.png")
+            
+        return Image.open(img_path).convert('RGB')
+    
     def __getitem__(self, idx):
         # Get the row from the dataframe
         row = self.data.iloc[idx]
@@ -53,15 +64,8 @@ class RunningRouteDataset(Dataset):
         if self.verbose:
             print(f"Loading image for index {idx}, Image ID: {img_id}")
         
-        if img_id > 50425:
-            img_path = os.path.join(self.img_dirs[1], f"map{img_id}.png")
-        else:
-            img_path = os.path.join(self.img_dirs[0], f"map{img_id}.png")
-
-        image = Image.open(img_path).convert('RGB')
-        
-        if self.transform:
-            image = self.transform(image)
+        # Load the full map image (we'll use this for reference and local cropping)
+        full_image = self.load_full_map(img_id)
         
         # Get route coordinates
         route_xy = np.array(eval(row['route_xy'])) if isinstance(row['route_xy'], str) else row['route_xy']
@@ -74,8 +78,11 @@ class RunningRouteDataset(Dataset):
         start_point = torch.tensor(route_xy[0], dtype=torch.float32)
         end_point = torch.tensor(route_xy[-1], dtype=torch.float32)
         
-        # Combine conditions into one tensor
-        conditions = torch.cat([distance, start_point, end_point], dim=0)
+        # Store the full image with transform applied
+        if self.transform:
+            transformed_full_image = self.transform(full_image)
+        else:
+            transformed_full_image = transforms.ToTensor()(full_image)
         
         # Create input-target pairs for sequence learning
         # Input: all coordinates except the last one
@@ -83,20 +90,30 @@ class RunningRouteDataset(Dataset):
         input_seq = route_tensor[:-1]
         target_seq = route_tensor[1:]
         
+        # Calculate steps remaining for each position in the sequence
+        # This helps the model know how many steps until it should reach the end
+        seq_length = len(route_xy)
+        steps_remaining = torch.arange(seq_length-1, 0, -1).float()
+        
         return {
-            'image': image,
+            'full_image': transformed_full_image,
             'route': route_tensor,
             'input_seq': input_seq,
             'target_seq': target_seq,
-            'conditions': conditions,
-            'seq_length': len(route_xy)
+            'conditions': torch.cat([distance, start_point, end_point], dim=0),
+            'seq_length': seq_length,
+            'steps_remaining': steps_remaining,
+            'img_id': img_id,
+            'original_img_size': torch.tensor([full_image.height, full_image.width])
         }
 
 
-class MapEncoder(nn.Module):
-    """Encodes the map image into a feature representation"""
-    def __init__(self, output_dim=256):
-        super(MapEncoder, self).__init__()
+class LocalMapEncoder(nn.Module):
+    """Encodes local map crops around the current position"""
+    def __init__(self, output_dim=256, local_map_size=128):
+        super(LocalMapEncoder, self).__init__()
+        
+        self.local_map_size = local_map_size
         
         self.conv_layers = nn.Sequential(
             # Layer 1
@@ -120,14 +137,15 @@ class MapEncoder(nn.Module):
             nn.ReLU(),
         )
         
-        # Calculate the flattened size - for 683x1366 input
-        # After 4 stride-2 layers: 43x86x128
-        self.flattened_size = 128 * 43 * 86
+        # Calculate the flattened size based on local map size
+        # After 4 stride-2 layers: size = original_size / 16
+        conv_output_size = local_map_size // 16
+        self.flattened_size = 128 * conv_output_size * conv_output_size
         
         self.fc = nn.Sequential(
-            nn.Linear(self.flattened_size, 1024),
+            nn.Linear(self.flattened_size, 512),
             nn.ReLU(),
-            nn.Linear(1024, output_dim)
+            nn.Linear(512, output_dim)
         )
         
     def forward(self, x):
@@ -138,8 +156,11 @@ class MapEncoder(nn.Module):
 
 
 class ConditionEncoder(nn.Module):
-    """Encodes the conditioning information (distance, start, end points)"""
-    def __init__(self, input_dim=5, output_dim=64):
+    """
+    Encodes the conditioning information
+    (distance, start, end points, steps remaining)
+    """
+    def __init__(self, input_dim=6, output_dim=64):
         super(ConditionEncoder, self).__init__()
         
         self.encoder = nn.Sequential(
@@ -152,10 +173,11 @@ class ConditionEncoder(nn.Module):
         return self.encoder(x)
 
 
-class RoutePredictor(nn.Module):
-    """LSTM model for predicting the next coordinate based on previous coordinates"""
+class ImprovedRoutePredictor(nn.Module):
+    """LSTM model for predicting the next coordinate based on previous coordinates
+    and local map features"""
     def __init__(self, map_feature_dim=256, condition_dim=64, hidden_dim=256, num_layers=2):
-        super(RoutePredictor, self).__init__()
+        super(ImprovedRoutePredictor, self).__init__()
         
         # Coordinate embedder - convert raw (x,y) into a richer representation
         self.coord_embedder = nn.Sequential(
@@ -188,8 +210,8 @@ class RoutePredictor(nn.Module):
         
         Args:
             coords: Tensor of shape [batch_size, seq_len, 2] with input coordinates
-            map_features: Tensor of shape [batch_size, map_feature_dim]
-            condition_features: Tensor of shape [batch_size, condition_dim]
+            map_features: Tensor of shape [batch_size, seq_len, map_feature_dim]
+            condition_features: Tensor of shape [batch_size, seq_len, condition_dim]
             hidden: Initial hidden state (optional)
             
         Returns:
@@ -204,12 +226,8 @@ class RoutePredictor(nn.Module):
         # Process sequence with LSTM
         lstm_out, hidden = self.lstm(embedded_coords, hidden)
         
-        # Expand map and condition features to match sequence length
-        map_features_expanded = map_features.unsqueeze(1).expand(-1, seq_len, -1)
-        condition_features_expanded = condition_features.unsqueeze(1).expand(-1, seq_len, -1)
-        
-        # Combine LSTM output with context
-        combined = torch.cat([lstm_out, map_features_expanded, condition_features_expanded], dim=2)
+        # Combine LSTM output with context (map features and conditions)
+        combined = torch.cat([lstm_out, map_features, condition_features], dim=2)
         context_integrated = self.context_layer(combined)
         
         # Predict next coordinates
@@ -218,61 +236,170 @@ class RoutePredictor(nn.Module):
         return next_coords, hidden
 
 
-class ImprovedSequentialRouteGenerator(nn.Module):
-    """Complete model for generating routes sequentially with proper next-coordinate prediction"""
-    def __init__(self, map_feature_dim=256, condition_dim=64, hidden_dim=256, num_layers=2):
-        super(ImprovedSequentialRouteGenerator, self).__init__()
+class LocalMapAwareRouteGenerator(nn.Module):
+    """Enhanced model with local map awareness and steps remaining information"""
+    def __init__(self, map_feature_dim=256, condition_dim=64, hidden_dim=256, 
+                 num_layers=2, local_map_size=128):
+        super(LocalMapAwareRouteGenerator, self).__init__()
         
-        self.map_encoder = MapEncoder(output_dim=map_feature_dim)
-        self.condition_encoder = ConditionEncoder(input_dim=5, output_dim=condition_dim)
-        self.route_predictor = RoutePredictor(
+        self.local_map_size = local_map_size
+        self.map_feature_dim = map_feature_dim
+        
+        # Local map encoder instead of global map encoder
+        self.local_map_encoder = LocalMapEncoder(
+            output_dim=map_feature_dim,
+            local_map_size=local_map_size
+        )
+        
+        # Enhanced condition encoder that includes steps remaining
+        self.condition_encoder = ConditionEncoder(
+            input_dim=6,  # distance, start_x, start_y, end_x, end_y, steps_remaining
+            output_dim=condition_dim
+        )
+        
+        # Improved route predictor
+        self.route_predictor = ImprovedRoutePredictor(
             map_feature_dim=map_feature_dim,
             condition_dim=condition_dim,
             hidden_dim=hidden_dim,
             num_layers=num_layers
         )
+    def get_local_map_crops(self, full_map, coords, map_size):
+        """
+        Extract local map crops around each coordinate
+        
+        Args:
+            full_map: Full map image tensor [batch_size, channels, height, width]
+            coords: Coordinates tensor [batch_size, seq_len, 2]
+            map_size: Size of the local map crop (square)
+            
+        Returns:
+            local_maps: Tensor of local map crops [batch_size, seq_len, channels, crop_h, crop_w]
+        """
     
-    def forward(self, map_img, conditions, input_seq):
+        batch_size, seq_len, _ = coords.shape
+        channels = full_map.shape[1]
+        device = full_map.device
+        half_size = map_size // 2
+        
+        # Initialize output tensor
+        local_maps = torch.zeros(
+            (batch_size, seq_len, channels, map_size, map_size), 
+            device=device
+        )
+        
+        # Create grid sampling coordinates for all crops at once
+        coords_norm = coords.float()  # [batch_size, seq_len, 2]
+        
+        # Create normalized grid coordinates for each crop
+        y_indices = torch.arange(-half_size, half_size, device=device).float()
+        x_indices = torch.arange(-half_size, half_size, device=device).float()
+        
+        # Normalize to [-1, 1] for grid_sample
+        h, w = full_map.shape[2:4]
+        y_grid = (y_indices / (h - 1) * 2)
+        x_grid = (x_indices / (w - 1) * 2)
+        
+        # Create sampling grid for all positions
+        grid_y, grid_x = torch.meshgrid(y_grid, x_grid, indexing='ij')
+        base_grid = torch.stack([grid_x, grid_y], dim=-1)  # [map_size, map_size, 2]
+        
+        # Process batches to avoid excessive memory usage
+        for batch_idx in range(batch_size):
+            # Normalize coordinates to [-1, 1] range for grid_sample
+            y_norm = coords_norm[batch_idx, :, 0] / (h - 1) * 2 - 1
+            x_norm = coords_norm[batch_idx, :, 1] / (w - 1) * 2 - 1
+            
+            # For each sequence position, create a grid centered at that coordinate
+            for seq_idx in range(seq_len):
+                # Offset the base grid by the normalized coordinate
+                grid = base_grid.clone()
+                grid[..., 0] = grid[..., 0] + x_norm[seq_idx]
+                grid[..., 1] = grid[..., 1] + y_norm[seq_idx]
+                
+                # Ensure grid values are within [-1, 1]
+                grid = torch.clamp(grid, -1, 1)
+                
+                # Use grid_sample to extract the crop (handles out-of-bounds with padding)
+                crop = torch.nn.functional.grid_sample(
+                    full_map[batch_idx:batch_idx+1],
+                    grid.unsqueeze(0),
+                    mode='bilinear',
+                    padding_mode='zeros',
+                    align_corners=True
+                )
+                
+                local_maps[batch_idx, seq_idx] = crop.squeeze(0)
+        
+        return local_maps
+    
+    def forward(self, full_map, conditions, input_seq, steps_remaining):
         """
         Forward pass through the model for training
         
         Args:
-            map_img: The map image tensor [batch_size, channels, height, width]
+            full_map: The full map image tensor [batch_size, channels, height, width]
             conditions: Tensor with distance, start and end points [batch_size, 5]
             input_seq: Input sequence of coordinates [batch_size, seq_len, 2]
+            steps_remaining: Steps remaining to end for each position [batch_size, seq_len]
             
         Returns:
             predicted_coords: Predicted next coordinates for each input position
         """
-        # Encode map and conditions
-        map_features = self.map_encoder(map_img)
-        condition_features = self.condition_encoder(conditions)
+        batch_size, seq_len, _ = input_seq.shape
+        device = full_map.device
         
-        # Predict next coordinates based on input sequence
-        predicted_coords, _ = self.route_predictor(input_seq, map_features, condition_features)
+        # Get local map crops around each input coordinate
+        local_maps = self.get_local_map_crops(full_map, input_seq, self.local_map_size)
+        
+        # Reshape for processing
+        local_maps_flat = local_maps.reshape(batch_size * seq_len, 3, self.local_map_size, self.local_map_size)
+        
+        # Encode each local map
+        local_map_features = self.local_map_encoder(local_maps_flat)
+        
+        # Reshape back to [batch_size, seq_len, feature_dim]
+        map_features = local_map_features.reshape(batch_size, seq_len, self.map_feature_dim)
+        
+        # Enhance conditions with steps remaining
+        enhanced_conditions = []
+        for b in range(batch_size):
+            # Combine base conditions with steps remaining for each position
+            base_cond = conditions[b].unsqueeze(0).expand(seq_len, -1)  # [seq_len, 5]
+            steps = steps_remaining[b, :seq_len].unsqueeze(1)  # [seq_len, 1]
+            combined = torch.cat([base_cond, steps], dim=1)  # [seq_len, 6]
+            enhanced_conditions.append(combined)
+        
+        enhanced_conditions = torch.stack(enhanced_conditions)  # [batch_size, seq_len, 6]
+        
+        # Encode enhanced conditions
+        condition_features = self.condition_encoder(enhanced_conditions)
+        
+        # Predict next coordinates
+        predicted_coords, _ = self.route_predictor(
+            input_seq, 
+            map_features, 
+            condition_features
+        )
         
         return predicted_coords
     
-    def generate_route(self, map_img, conditions, max_length=500):
+    def generate_route(self, full_map, conditions, max_length=500):
         """
         Generate a complete route autoregressively
         
         Args:
-            map_img: The map image tensor [batch_size, channels, height, width]
+            full_map: The full map image tensor [batch_size, channels, height, width]
             conditions: Tensor with distance, start and end points [batch_size, 5]
             max_length: Maximum route length to generate
             
         Returns:
             generated_route: The generated route coordinates
         """
-        batch_size = map_img.size(0)
-        device = map_img.device
+        batch_size = full_map.size(0)
+        device = full_map.device
         
-        # Encode map and conditions (only done once)
-        with torch.no_grad():
-            map_features = self.map_encoder(map_img)
-            condition_features = self.condition_encoder(conditions)
-            
+        with torch.no_grad():            
             # Initialize the route with the start point (from conditions)
             start_point = conditions[:, 1:3].unsqueeze(1)  # [batch_size, 1, 2]
             generated_route = [start_point]
@@ -281,23 +408,62 @@ class ImprovedSequentialRouteGenerator(nn.Module):
             hidden = None
             
             # Generate points one by one autoregressively
-            current_seq = start_point
+            current_point = start_point
             
-            for _ in range(max_length - 1):
-                # Predict next coordinate
-                next_coord_pred, hidden = self.route_predictor(
-                    current_seq, map_features, condition_features, hidden
+            for step in range(max_length - 1):
+                # Calculate steps remaining
+                steps_remaining = torch.tensor(
+                    [[max_length - step - 1]], 
+                    dtype=torch.float32, 
+                    device=device
+                ).expand(batch_size, 1)
+                
+                # Get local map around current point
+                local_map = self.get_local_map_crops(
+                    full_map, 
+                    current_point, 
+                    self.local_map_size
                 )
                 
-                # Get the last predicted coordinate
-                next_coord = next_coord_pred[:, -1:, :]
+                # Reshape for processing (batch_size, 1, C, H, W) -> (batch_size, C, H, W)
+                local_map = local_map.squeeze(1)
+                
+                # Encode local map
+                map_features = self.local_map_encoder(local_map).unsqueeze(1)  # [batch_size, 1, feature_dim]
+                
+                # Enhance conditions with steps remaining
+                enhanced_conditions = torch.cat([
+                    conditions, 
+                    steps_remaining
+                ], dim=1).unsqueeze(1)  # [batch_size, 1, 6]
+                
+                # Encode conditions
+                condition_features = self.condition_encoder(enhanced_conditions)
+                
+                # Predict next coordinate
+                next_coord_pred, hidden = self.route_predictor(
+                    current_point, 
+                    map_features, 
+                    condition_features, 
+                    hidden
+                )
+                
+                # Get the predicted coordinate
+                next_point = next_coord_pred
                 
                 # Add to the generated route
-                generated_route.append(next_coord)
+                generated_route.append(next_point)
                 
-                # Update current sequence for next iteration
-                # For autoregressive generation, we only use the most recent point
-                current_seq = next_coord
+                # Update current point for next iteration
+                current_point = next_point
+                
+                # Check if we're close enough to the end point
+                end_points = conditions[:, 3:5].unsqueeze(1)  # [batch_size, 1, 2]
+                distances_to_end = torch.norm(current_point - end_points, dim=2)
+                
+                # If all routes are close to their end points, we can stop early
+                if torch.all(distances_to_end < 10):  # 10 pixels threshold
+                    break
             
             # Concatenate all coordinates
             full_route = torch.cat(generated_route, dim=1)
@@ -308,12 +474,13 @@ class ImprovedSequentialRouteGenerator(nn.Module):
 def create_padded_batch(batch_data):
     """Create a padded batch for variable-length sequences"""
     # Get data from batch
-    images = torch.stack([item['image'] for item in batch_data])
+    images = torch.stack([item['full_image'] for item in batch_data])
     conditions = torch.stack([item['conditions'] for item in batch_data])
     
     # Get sequences and their lengths
     input_seqs = [item['input_seq'] for item in batch_data]
     target_seqs = [item['target_seq'] for item in batch_data]
+    steps_remaining = [item['steps_remaining'] for item in batch_data]
     seq_lengths = [item['seq_length'] - 1 for item in batch_data]  # -1 because we're predicting next coords
     
     # Find max sequence length in this batch
@@ -322,8 +489,9 @@ def create_padded_batch(batch_data):
     # Pad sequences
     padded_inputs = []
     padded_targets = []
+    padded_steps = []
     
-    for inp, tgt in zip(input_seqs, target_seqs):
+    for inp, tgt, steps in zip(input_seqs, target_seqs, steps_remaining):
         # Pad input sequence
         padded_inp = torch.zeros((max_len, 2))
         padded_inp[:len(inp)] = inp
@@ -333,27 +501,33 @@ def create_padded_batch(batch_data):
         padded_tgt = torch.zeros((max_len, 2))
         padded_tgt[:len(tgt)] = tgt
         padded_targets.append(padded_tgt)
+        
+        # Pad steps remaining
+        padded_step = torch.zeros(max_len)
+        padded_step[:len(steps)] = steps
+        padded_steps.append(padded_step)
     
     # Stack into tensors
     padded_inputs = torch.stack(padded_inputs)
     padded_targets = torch.stack(padded_targets)
+    padded_steps = torch.stack(padded_steps)
     seq_lengths = torch.tensor(seq_lengths)
     
     return {
-        'image': images,
+        'full_image': images,
         'conditions': conditions,
         'input_seq': padded_inputs,
         'target_seq': padded_targets,
+        'steps_remaining': padded_steps,
         'seq_lengths': seq_lengths
     }
 
 
-def train_improved_model(model, data_loader, num_epochs=100, lr=0.001, 
+def train_local_map_model(model, data_loader, num_epochs=100, lr=0.001, 
                          device='cuda', save_interval=10, save_dir='models',
                          log_dir='tensorboard_logs'):
     """
-    Train the improved sequential route generation model with proper next-step prediction
-    and TensorBoard logging for visualization of training metrics
+    Train the local map aware route generation model with step-remaining tracking
     """
     print("Initializing training...")
     
@@ -370,7 +544,7 @@ def train_improved_model(model, data_loader, num_epochs=100, lr=0.001,
     optimizer = optim.Adam(model.parameters(), lr=lr)
     
     # Use MSE loss for coordinate regression
-    criterion = nn.MSELoss()
+    coord_criterion = nn.MSELoss()
     
     # Create log dictionaries
     losses = {'train': []}
@@ -384,19 +558,6 @@ def train_improved_model(model, data_loader, num_epochs=100, lr=0.001,
     
     # Calculate total number of batches
     total_batches = len(data_loader)
-    
-    # Log model graph to TensorBoard (optional)
-    # Get a sample batch to create the graph
-    sample_batch = next(iter(data_loader))
-    sample_images = sample_batch['image'].to(device)
-    sample_conditions = sample_batch['conditions'].to(device)
-    sample_input_seq = sample_batch['input_seq'].to(device)
-    
-    # Log the model architecture
-    try:
-        writer.add_graph(model, (sample_images, sample_conditions, sample_input_seq))
-    except Exception as e:
-        print(f"Failed to log model graph: {e}")
     
     # Global step counter for TensorBoard
     global_step = 0
@@ -422,17 +583,18 @@ def train_improved_model(model, data_loader, num_epochs=100, lr=0.001,
         
         for i, batch in progress_bar:
             # Move batch data to device
-            images = batch['image'].to(device)
+            full_images = batch['full_image'].to(device)
             conditions = batch['conditions'].to(device)
             input_seq = batch['input_seq'].to(device)
             target_seq = batch['target_seq'].to(device)
+            steps_remaining = batch['steps_remaining'].to(device)
             
             # Forward pass
             optimizer.zero_grad()
-            predicted_coords = model(images, conditions, input_seq)
+            predicted_coords = model(full_images, conditions, input_seq, steps_remaining)
             
             # Calculate primary loss (MSE)
-            loss = criterion(predicted_coords, target_seq)
+            loss = coord_criterion(predicted_coords, target_seq)
             
             # Calculate additional metrics for logging
             with torch.no_grad():
@@ -440,7 +602,6 @@ def train_improved_model(model, data_loader, num_epochs=100, lr=0.001,
                 mae = torch.mean(torch.abs(predicted_coords - target_seq))
                 
                 # Euclidean distance error (for each point pair)
-                # Assuming coordinates are in pairs (x,y)
                 pred_reshaped = predicted_coords.view(-1, 2)
                 target_reshaped = target_seq.view(-1, 2)
                 distance_error = torch.sqrt(torch.sum((pred_reshaped - target_reshaped)**2, dim=1)).mean()
@@ -463,10 +624,6 @@ def train_improved_model(model, data_loader, num_epochs=100, lr=0.001,
             writer.add_scalar('Batch/Loss', loss.item(), global_step)
             writer.add_scalar('Batch/MAE', mae.item(), global_step)
             writer.add_scalar('Batch/Distance_Error', distance_error.item(), global_step)
-            
-            # Log learning rate
-            current_lr = optimizer.param_groups[0]['lr']
-            writer.add_scalar('Training/Learning_Rate', current_lr, global_step)
             
             # Update progress bar
             progress_bar.set_postfix({
@@ -508,7 +665,7 @@ def train_improved_model(model, data_loader, num_epochs=100, lr=0.001,
         # Save model periodically
         if epoch % save_interval == 0 or epoch == num_epochs - 1:
             print(f"Saving model checkpoint for epoch {epoch+1}...")
-            model_path = f"{save_dir}/sequential_model_{epoch}.pt"
+            model_path = f"{save_dir}/local_map_model_epoch_{epoch}.pt"
             torch.save(model.state_dict(), model_path)
             
             # Add model checkpoint to TensorBoard
@@ -519,15 +676,15 @@ def train_improved_model(model, data_loader, num_epochs=100, lr=0.001,
         model.eval()
         with torch.no_grad():
             # Generate routes using a small sample of images from the batch
-            num_samples = min(4, images.size(0))
-            sample_maps = images[:num_samples]
+            num_samples = min(4, full_images.size(0))
+            sample_maps = full_images[:num_samples]
             sample_conditions = conditions[:num_samples]
             
             # Generate routes
             sample_routes = model.generate_route(sample_maps, sample_conditions)
             
             # Visualize and save
-            sample_path = f"{save_dir}/sample_epoch_{epoch}.png"
+            sample_path = f"{save_dir}/sample_local_map_epoch_{epoch}.png"
             visualize_routes(sample_maps, sample_routes, sample_path)
             print(f"Sample routes saved to {sample_path}")
             
@@ -537,12 +694,6 @@ def train_improved_model(model, data_loader, num_epochs=100, lr=0.001,
                 writer.add_image('Generated Routes', sample_img.transpose(2, 0, 1), epoch, dataformats='CHW')
             except Exception as e:
                 print(f"Failed to log route images to TensorBoard: {e}")
-            
-            # Log route statistics (optional)
-            if sample_routes is not None and len(sample_routes) > 0:
-                route_lengths = [len(route) for route in sample_routes]
-                writer.add_histogram('Route/Length_Distribution', np.array(route_lengths), epoch)
-                writer.add_scalar('Route/Average_Length', np.mean(route_lengths), epoch)
     
     # Calculate total training time
     total_time = time.time() - start_time
@@ -600,8 +751,199 @@ def visualize_routes(maps, routes, save_path=None):
     else:
         plt.show()
 
+import torch
+import time
+import functools
+import cProfile
+import pstats
+import io
+from torch.utils.data import DataLoader
+from memory_profiler import profile as memory_profile
+from torch.profiler import profile, record_function, ProfilerActivity
+from torch.cuda.amp import autocast, GradScaler
 
-def main():
+class PerformanceProfiler:
+    """Utility class to profile different parts of the ML pipeline"""
+    
+    @staticmethod
+    def measure_time(func):
+        """Decorator to measure execution time of a function"""
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            start_time = time.time()
+            result = func(*args, **kwargs)
+            end_time = time.time()
+            print(f"Function {func.__name__} took {end_time - start_time:.4f} seconds to execute")
+            return result
+        return wrapper
+    
+    @staticmethod
+    def profile_function(func):
+        """Decorator to profile a function using cProfile"""
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            pr = cProfile.Profile()
+            pr.enable()
+            result = func(*args, **kwargs)
+            pr.disable()
+            s = io.StringIO()
+            ps = pstats.Stats(pr, stream=s).sort_stats('cumulative')
+            ps.print_stats(20)  # Print top 20 time-consuming functions
+            print(s.getvalue())
+            return result
+        return wrapper
+    
+    @staticmethod
+    def profile_memory(func):
+        """Decorator to profile memory usage of a function"""
+        @memory_profile
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            return func(*args, **kwargs)
+        return wrapper
+    
+    @staticmethod
+    def profile_data_loading(dataset, batch_size=16, num_workers=0):
+        """Profile data loading performance"""
+        print(f"Profiling DataLoader with batch_size={batch_size}, num_workers={num_workers}")
+        
+        # Create data loader
+        loader = DataLoader(
+            dataset, 
+            batch_size=batch_size, 
+            shuffle=True, 
+            num_workers=num_workers,
+            collate_fn=create_padded_batch
+        )
+        
+        # Time data loading
+        start_time = time.time()
+        for i, batch in enumerate(loader):
+            if i >= 10:  # Only test a few batches
+                break
+        end_time = time.time()
+        
+        avg_time = (end_time - start_time) / min(10, len(loader))
+        print(f"Average batch loading time: {avg_time:.4f} seconds")
+        
+        return avg_time
+    
+    @staticmethod
+    def profile_gpu_operations(model, dataloader, device, num_batches=5):
+        """Profile GPU operations using PyTorch profiler"""
+        model = model.to(device)
+        
+        # Warm-up
+        print("Warming up...")
+        for i, batch in enumerate(dataloader):
+            if i >= 3:
+                break
+            
+            full_images = batch['full_image'].to(device)
+            conditions = batch['conditions'].to(device)
+            input_seq = batch['input_seq'].to(device)
+            steps_remaining = batch['steps_remaining'].to(device)
+            
+            with torch.no_grad():
+                _ = model(full_images, conditions, input_seq, steps_remaining)
+        
+        print("Starting GPU profiling...")
+        # Profile with PyTorch profiler
+        with profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            record_shapes=True,
+            profile_memory=True
+        ) as prof:
+            for i, batch in enumerate(dataloader):
+                if i >= num_batches:
+                    break
+                
+                with record_function("batch_processing"):
+                    full_images = batch['full_image'].to(device)
+                    conditions = batch['conditions'].to(device)
+                    input_seq = batch['input_seq'].to(device)
+                    target_seq = batch['target_seq'].to(device)
+                    steps_remaining = batch['steps_remaining'].to(device)
+                    
+                    with record_function("forward_pass"):
+                        predicted_coords = model(full_images, conditions, input_seq, steps_remaining)
+                    
+                    with record_function("loss_calculation"):
+                        loss = torch.nn.functional.mse_loss(predicted_coords, target_seq)
+                    
+                    with record_function("backward_pass"):
+                        loss.backward()
+        
+        print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=20))
+        return prof
+    
+    @staticmethod
+    def profile_specific_components(model, batch, device):
+        """Profile specific components of the model to identify bottlenecks"""
+        # Move data to device
+        full_images = batch['full_image'].to(device)
+        conditions = batch['conditions'].to(device)
+        input_seq = batch['input_seq'].to(device)
+        steps_remaining = batch['steps_remaining'].to(device)
+        
+        batch_size, seq_len, _ = input_seq.shape
+        
+        # Profile get_local_map_crops
+        start_time = time.time()
+        with record_function("get_local_map_crops"):
+            local_maps = model.get_local_map_crops(full_images, input_seq, model.local_map_size)
+        crop_time = time.time() - start_time
+        print(f"get_local_map_crops took {crop_time:.4f} seconds")
+        
+        # Profile local_map_encoder
+        local_maps_flat = local_maps.reshape(batch_size * seq_len, 3, model.local_map_size, model.local_map_size)
+        start_time = time.time()
+        with record_function("local_map_encoder"):
+            local_map_features = model.local_map_encoder(local_maps_flat)
+        encoder_time = time.time() - start_time
+        print(f"local_map_encoder took {encoder_time:.4f} seconds")
+        
+        # Profile condition_encoder
+        # Prepare enhanced conditions
+        enhanced_conditions = []
+        for b in range(batch_size):
+            base_cond = conditions[b].unsqueeze(0).expand(seq_len, -1)
+            steps = steps_remaining[b, :seq_len].unsqueeze(1)
+            combined = torch.cat([base_cond, steps], dim=1)
+            enhanced_conditions.append(combined)
+        enhanced_conditions = torch.stack(enhanced_conditions)
+        
+        start_time = time.time()
+        with record_function("condition_encoder"):
+            condition_features = model.condition_encoder(enhanced_conditions)
+        condition_time = time.time() - start_time
+        print(f"condition_encoder took {condition_time:.4f} seconds")
+        
+        # Profile route_predictor
+        map_features = local_map_features.reshape(batch_size, seq_len, model.map_feature_dim)
+        start_time = time.time()
+        with record_function("route_predictor"):
+            predicted_coords, _ = model.route_predictor(input_seq, map_features, condition_features)
+        predictor_time = time.time() - start_time
+        print(f"route_predictor took {predictor_time:.4f} seconds")
+        
+        return {
+            "get_local_map_crops": crop_time,
+            "local_map_encoder": encoder_time,
+            "condition_encoder": condition_time,
+            "route_predictor": predictor_time
+        }
+
+
+def profile_main():
+    """Main function to profile the model"""
+    # Load configuration
+    print("Setting up profiling environment...")
+    data_path = "data/processed_combined.csv"
+    img_dir1 = "image_data/images0_25000"
+    img_dir2 = "image_data"
+    batch_size = 16
+    
     # Check device
     if torch.backends.mps.is_available():
         device = torch.device("mps")
@@ -611,31 +953,151 @@ def main():
         device = torch.device("cpu")
     
     print(f"Using device: {device}")
-    print(f"{'-'*80}")
     
-    # Configuration
-    data_path = "data/processed_combined.csv"
-    img_dir1 = "image_data/images0_25000"
-    img_dir2 = "image_data"
-    batch_size = 16
-    num_epochs = 50
-    
-    print(f"Configuration:")
-    print(f"- Data: {data_path}")
-    print(f"- Batch size: {batch_size}")
-    print(f"- Epochs: {num_epochs}")
-    print(f"{'-'*80}")
-    
-    # Image transformations
+    # Create dataset with limited size for profiling
     transform = transforms.Compose([
         transforms.Resize((683, 1366)),
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     ])
     
+    # Create dataset with verbose=True to see data loading details
+    dataset = RunningRouteDataset(
+        data_path, 
+        [img_dir1, img_dir2], 
+        transform=transform, 
+        verbose=True
+    )
+    
+    print(f"Created dataset with {len(dataset)} samples")
+    
+    # Profile data loading with different num_workers
+    print("\n=== Profiling DataLoader Performance ===")
+    worker_times = {}
+    for workers in [0, 2, 4, 8]:
+        if workers > 0 and device == torch.device("mps"):
+            print(f"Skipping num_workers={workers} for MPS device (not supported)")
+            continue
+        time_taken = PerformanceProfiler.profile_data_loading(
+            dataset, 
+            batch_size=batch_size, 
+            num_workers=workers
+        )
+        worker_times[workers] = time_taken
+    
+    optimal_workers = min(worker_times, key=worker_times.get)
+    print(f"Optimal num_workers setting: {optimal_workers}")
+    
+    # Create dataloader with optimal workers
+    dataloader = DataLoader(
+        dataset, 
+        batch_size=batch_size, 
+        shuffle=True, 
+        num_workers=optimal_workers,
+        collate_fn=create_padded_batch
+    )
+    
+    # Initialize model
+    print("\n=== Initializing Model ===")
+    model = LocalMapAwareRouteGenerator().to(device)
+    
+    # Get a batch for detailed profiling
+    for batch in dataloader:
+        break
+    
+    # Profile model components
+    print("\n=== Profiling Model Components ===")
+    component_times = PerformanceProfiler.profile_specific_components(model, batch, device)
+    
+    # Sort components by time
+    sorted_components = sorted(component_times.items(), key=lambda x: x[1], reverse=True)
+    print("\nComponent timing summary (slowest to fastest):")
+    for component, time_taken in sorted_components:
+        print(f"{component}: {time_taken:.4f} seconds ({time_taken/sum(component_times.values())*100:.1f}%)")
+    
+    # Profile GPU operations
+    if device.type == "cuda":
+        print("\n=== Profiling GPU Operations ===")
+        gpu_profile = PerformanceProfiler.profile_gpu_operations(model, dataloader, device)
+    
+    # Profile a training step
+    print("\n=== Profiling Complete Training Step ===")
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    
+    @PerformanceProfiler.profile_function
+    def train_step(model, batch, optimizer, device):
+        # Move batch data to device
+        full_images = batch['full_image'].to(device)
+        conditions = batch['conditions'].to(device)
+        input_seq = batch['input_seq'].to(device)
+        target_seq = batch['target_seq'].to(device)
+        steps_remaining = batch['steps_remaining'].to(device)
+        
+        # Forward pass
+        optimizer.zero_grad()
+        predicted_coords = model(full_images, conditions, input_seq, steps_remaining)
+        
+        # Calculate loss
+        loss = torch.nn.functional.mse_loss(predicted_coords, target_seq)
+        
+        # Backward pass
+        loss.backward()
+        
+        # Gradient clipping
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
+        optimizer.step()
+        
+        return loss.item()
+    
+    loss = train_step(model, batch, optimizer, device)
+    print(f"Training step loss: {loss:.4f}")
+    
+    print("\n=== Profiling Complete ===")
+    return {
+        "dataset": dataset,
+        "dataloader": dataloader,
+        "model": model,
+        "device": device,
+        "worker_times": worker_times,
+        "component_times": component_times
+    }
+
+def main():
+    # Check device
+    if torch.backends.mps.is_available():
+        device = torch.device("mps")
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+
+    print(f"Using device: {device}")
+    print(f"{'-'*80}")
+
+    # Configuration
+    data_path = "data/processed_combined.csv"
+    img_dir1 = "image_data/images0_25000"
+    img_dir2 = "image_data"
+    batch_size = 16
+    num_epochs = 50
+
+    print(f"Configuration:")
+    print(f"- Data: {data_path}")
+    print(f"- Batch size: {batch_size}")
+    print(f"- Epochs: {num_epochs}")
+    print(f"{'-'*80}")
+
+    # Image transformations
+    transform = transforms.Compose([
+        transforms.Resize((683, 1366)),
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    ])
+
     # Create dataset
     dataset = RunningRouteDataset(data_path, [img_dir1, img_dir2], transform=transform)
-    
+
     print(f"Creating data loader with {len(dataset)} samples")
     dataloader = DataLoader(
         dataset, 
@@ -644,14 +1106,14 @@ def main():
         num_workers=4,
         collate_fn=create_padded_batch  # Handle variable-length sequences
     )
-    
+
     # Initialize model
-    model = ImprovedSequentialRouteGenerator().to(device)
+    model = LocalMapAwareRouteGenerator().to(device)
     print("Model created successfully")
-    
+
     # Train model
     print(f"{'-'*80}")
-    trained_model, losses = train_improved_model(
+    trained_model, losses = train_local_map_model(
         model,
         dataloader, 
         num_epochs=num_epochs, 
@@ -659,11 +1121,11 @@ def main():
         save_dir='models',
         save_interval=5
     )
-    
+
     # Save final model
     print("Saving final model...")
     torch.save(trained_model.state_dict(), "models/sequential_model_final.pt")
-    
+
     # Plot losses
     print("Generating loss plot...")
     plt.figure(figsize=(10, 5))
@@ -671,14 +1133,15 @@ def main():
     plt.xlabel('Epochs')
     plt.ylabel('Loss')
     plt.legend()
-    
+
     loss_plot_path = "models/training_losses.png"
     plt.savefig(loss_plot_path)
     print(f"Loss plot saved to {loss_plot_path}")
-    
+
     print(f"{'-'*80}")
     print("Training complete!")
 
-
 if __name__ == "__main__":
-    main()
+
+    profile_main()
+    results = main()
