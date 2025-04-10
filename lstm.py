@@ -349,11 +349,24 @@ def create_padded_batch(batch_data):
 
 
 def train_improved_model(model, data_loader, num_epochs=100, lr=0.001, 
-                         device='cuda', save_interval=10, save_dir='models'):
+                         device='cuda', save_interval=10, save_dir='models',
+                         log_dir='tensorboard_logs'):
     """
     Train the improved sequential route generation model with proper next-step prediction
+    and TensorBoard logging for visualization of training metrics
     """
     print("Initializing training...")
+    
+    # Import TensorBoard modules
+    from torch.utils.tensorboard import SummaryWriter
+    import numpy as np
+    
+    # Create TensorBoard writer
+    run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_path = os.path.join(log_dir, run_id)
+    writer = SummaryWriter(log_path)
+    print(f"TensorBoard logs will be saved to {log_path}")
+    
     optimizer = optim.Adam(model.parameters(), lr=lr)
     
     # Use MSE loss for coordinate regression
@@ -364,12 +377,29 @@ def train_improved_model(model, data_loader, num_epochs=100, lr=0.001,
     
     # Ensure save directory exists
     os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
     
     print(f"Starting training for {num_epochs} epochs...")
     start_time = time.time()
     
     # Calculate total number of batches
     total_batches = len(data_loader)
+    
+    # Log model graph to TensorBoard (optional)
+    # Get a sample batch to create the graph
+    sample_batch = next(iter(data_loader))
+    sample_images = sample_batch['image'].to(device)
+    sample_conditions = sample_batch['conditions'].to(device)
+    sample_input_seq = sample_batch['input_seq'].to(device)
+    
+    # Log the model architecture
+    try:
+        writer.add_graph(model, (sample_images, sample_conditions, sample_input_seq))
+    except Exception as e:
+        print(f"Failed to log model graph: {e}")
+    
+    # Global step counter for TensorBoard
+    global_step = 0
     
     # Training loop
     for epoch in range(num_epochs):
@@ -378,6 +408,9 @@ def train_improved_model(model, data_loader, num_epochs=100, lr=0.001,
         
         # Initialize epoch metrics
         epoch_loss = 0.0
+        epoch_mse = 0.0
+        epoch_mae = 0.0
+        epoch_distance_error = 0.0
         
         # Progress bar for this epoch
         progress_bar = tqdm(
@@ -398,8 +431,19 @@ def train_improved_model(model, data_loader, num_epochs=100, lr=0.001,
             optimizer.zero_grad()
             predicted_coords = model(images, conditions, input_seq)
             
-            # Calculate loss
+            # Calculate primary loss (MSE)
             loss = criterion(predicted_coords, target_seq)
+            
+            # Calculate additional metrics for logging
+            with torch.no_grad():
+                # Mean Absolute Error
+                mae = torch.mean(torch.abs(predicted_coords - target_seq))
+                
+                # Euclidean distance error (for each point pair)
+                # Assuming coordinates are in pairs (x,y)
+                pred_reshaped = predicted_coords.view(-1, 2)
+                target_reshaped = target_seq.view(-1, 2)
+                distance_error = torch.sqrt(torch.sum((pred_reshaped - target_reshaped)**2, dim=1)).mean()
             
             # Backward pass
             loss.backward()
@@ -411,15 +455,40 @@ def train_improved_model(model, data_loader, num_epochs=100, lr=0.001,
             
             # Update metrics
             epoch_loss += loss.item()
+            epoch_mse += loss.item()
+            epoch_mae += mae.item()
+            epoch_distance_error += distance_error.item()
+            
+            # Log batch metrics to TensorBoard
+            writer.add_scalar('Batch/Loss', loss.item(), global_step)
+            writer.add_scalar('Batch/MAE', mae.item(), global_step)
+            writer.add_scalar('Batch/Distance_Error', distance_error.item(), global_step)
+            
+            # Log learning rate
+            current_lr = optimizer.param_groups[0]['lr']
+            writer.add_scalar('Training/Learning_Rate', current_lr, global_step)
             
             # Update progress bar
             progress_bar.set_postfix({
-                'loss': f"{loss.item():.4f}"
+                'loss': f"{loss.item():.4f}",
+                'dist_err': f"{distance_error.item():.4f}"
             })
+            
+            global_step += 1
         
-        # Calculate average epoch loss
+        # Calculate average epoch metrics
         avg_epoch_loss = epoch_loss / total_batches
+        avg_epoch_mse = epoch_mse / total_batches
+        avg_epoch_mae = epoch_mae / total_batches
+        avg_epoch_distance_error = epoch_distance_error / total_batches
+        
         losses['train'].append(avg_epoch_loss)
+        
+        # Log epoch metrics to TensorBoard
+        writer.add_scalar('Epoch/Loss', avg_epoch_loss, epoch)
+        writer.add_scalar('Epoch/MSE', avg_epoch_mse, epoch)
+        writer.add_scalar('Epoch/MAE', avg_epoch_mae, epoch)
+        writer.add_scalar('Epoch/Distance_Error', avg_epoch_distance_error, epoch)
         
         # Calculate epoch time
         epoch_time = time.time() - epoch_start_time
@@ -433,13 +502,17 @@ def train_improved_model(model, data_loader, num_epochs=100, lr=0.001,
         # Print epoch summary
         print(f"\n{'-'*80}")
         print(f"Epoch {epoch+1}/{num_epochs} completed in {epoch_time:.2f} seconds")
-        print(f"Average loss: {avg_epoch_loss:.4f}")
+        print(f"Average loss: {avg_epoch_loss:.4f}, Distance error: {avg_epoch_distance_error:.4f}")
         print(f"Estimated time remaining: {est_time_str}")
         
         # Save model periodically
         if epoch % save_interval == 0 or epoch == num_epochs - 1:
             print(f"Saving model checkpoint for epoch {epoch+1}...")
-            torch.save(model.state_dict(), f"{save_dir}/sequential_model_{epoch}.pt")
+            model_path = f"{save_dir}/sequential_model_{epoch}.pt"
+            torch.save(model.state_dict(), model_path)
+            
+            # Add model checkpoint to TensorBoard
+            writer.add_text('Checkpoints', f"Model saved at epoch {epoch+1}: {model_path}", epoch)
             
         # Generate sample routes
         print("Generating sample routes...")
@@ -457,6 +530,19 @@ def train_improved_model(model, data_loader, num_epochs=100, lr=0.001,
             sample_path = f"{save_dir}/sample_epoch_{epoch}.png"
             visualize_routes(sample_maps, sample_routes, sample_path)
             print(f"Sample routes saved to {sample_path}")
+            
+            # Add sample route images to TensorBoard
+            try:
+                sample_img = plt.imread(sample_path)
+                writer.add_image('Generated Routes', sample_img.transpose(2, 0, 1), epoch, dataformats='CHW')
+            except Exception as e:
+                print(f"Failed to log route images to TensorBoard: {e}")
+            
+            # Log route statistics (optional)
+            if sample_routes is not None and len(sample_routes) > 0:
+                route_lengths = [len(route) for route in sample_routes]
+                writer.add_histogram('Route/Length_Distribution', np.array(route_lengths), epoch)
+                writer.add_scalar('Route/Average_Length', np.mean(route_lengths), epoch)
     
     # Calculate total training time
     total_time = time.time() - start_time
@@ -465,6 +551,10 @@ def train_improved_model(model, data_loader, num_epochs=100, lr=0.001,
     print(f"{'-'*80}")
     print(f"Training completed in {total_time_str}")
     print(f"Final average loss: {avg_epoch_loss:.4f}")
+    print(f"TensorBoard logs saved to {log_path}")
+    
+    # Close TensorBoard writer
+    writer.close()
     
     return model, losses
 
@@ -493,11 +583,11 @@ def visualize_routes(maps, routes, save_path=None):
         axes[i].imshow(map_np)
         
         # Overlay the route
-        axes[i].plot(route_np[:, 0], route_np[:, 1], 'r-', linewidth=1)
+        axes[i].plot(route_np[:, 1], route_np[:, 0], 'r-', linewidth=1)
         
         # Highlight start and end points
-        axes[i].plot(route_np[0, 0], route_np[0, 1], 'go', markersize=8)  # Start: green
-        axes[i].plot(route_np[-1, 0], route_np[-1, 1], 'bo', markersize=8)  # End: blue
+        axes[i].plot(route_np[0, 1], route_np[0, 0], 'go', markersize=8)  # Start: green
+        axes[i].plot(route_np[-1, 1], route_np[-1, 0], 'bo', markersize=8)  # End: blue
         
         axes[i].set_title(f"Generated Route {i+1}")
         axes[i].axis('off')
