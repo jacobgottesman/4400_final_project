@@ -1,0 +1,3257 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+<additional_info>
+
+</additional_info>
+
+</file_summary>
+
+<directory_structure>
+utils/
+  preprocessing.py
+.gitignore
+cgan.py
+combine_csvs.ipynb
+lstm.py
+route_generator.py
+simple_cgan.py
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="combine_csvs.ipynb">
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from utils.preprocessing import *\n",
+    "import pandas as pd"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "\n",
+    "def is_valid_tuple_list(item):\n",
+    "    if not isinstance(item, list):\n",
+    "        return False\n",
+    "    if len(item) != 500:\n",
+    "        return False\n",
+    "    for t in item:\n",
+    "        if not (isinstance(t, tuple) and len(t) == 2):\n",
+    "            return False\n",
+    "        if not all(isinstance(x, int) for x in t):\n",
+    "            return False\n",
+    "    return True"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "df = pd.read_csv('data/processed_routes_0_25000.csv')\n",
+    "df['route_xy'] = df['route_xy'].apply(eval)\n",
+    "df = df[df['route_xy'].apply(is_valid_tuple_list)]\n",
+    "# df = df.reset_index(drop=False, names='index')\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>longitude</th>\n",
+       "      <th>altitude</th>\n",
+       "      <th>latitude</th>\n",
+       "      <th>sport</th>\n",
+       "      <th>id</th>\n",
+       "      <th>heart_rate</th>\n",
+       "      <th>gender</th>\n",
+       "      <th>timestamp</th>\n",
+       "      <th>url</th>\n",
+       "      <th>userId</th>\n",
+       "      <th>speed</th>\n",
+       "      <th>distance</th>\n",
+       "      <th>duration</th>\n",
+       "      <th>start_end_dist</th>\n",
+       "      <th>bounds</th>\n",
+       "      <th>route_xy</th>\n",
+       "      <th>image_dims</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>50000</th>\n",
+       "      <td>[21.833996018394828, 21.833990653976798, 21.83...</td>\n",
+       "      <td>[72.2, 72.2, 75.0, 79.6, 85.0, 86.2, 87.2, 87....</td>\n",
+       "      <td>[51.58289453946054, 51.58289462327957, 51.5828...</td>\n",
+       "      <td>run</td>\n",
+       "      <td>278936964</td>\n",
+       "      <td>[72, 72, 76, 76, 76, 93, 107, 107, 115, 123, 1...</td>\n",
+       "      <td>male</td>\n",
+       "      <td>[1387809859, 1387809860, 1387809866, 138780987...</td>\n",
+       "      <td>https://www.endomondo.com/users/5746423/workou...</td>\n",
+       "      <td>5746423</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>9.317126</td>\n",
+       "      <td>90.850000</td>\n",
+       "      <td>0.012225</td>\n",
+       "      <td>[[51.55367888 21.82704032]\\n [51.58591306 21.8...</td>\n",
+       "      <td>[(95, 408), (95, 408), (97, 406), (100, 403), ...</td>\n",
+       "      <td>(1366, 683)</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>50001</th>\n",
+       "      <td>[21.833832319825888, 21.8338143825531, 21.8336...</td>\n",
+       "      <td>[96.6, 96.4, 94.8, 88.6, 87.6, 91.0, 98.4, 102...</td>\n",
+       "      <td>[51.58287308178842, 51.58286126330495, 51.5827...</td>\n",
+       "      <td>run</td>\n",
+       "      <td>278797765</td>\n",
+       "      <td>[72, 72, 86, 93, 105, 112, 127, 136, 140, 141,...</td>\n",
+       "      <td>male</td>\n",
+       "      <td>[1387739310, 1387739311, 1387739316, 138773933...</td>\n",
+       "      <td>https://www.endomondo.com/users/5746423/workou...</td>\n",
+       "      <td>5746423</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>15.735276</td>\n",
+       "      <td>122.733333</td>\n",
+       "      <td>0.019923</td>\n",
+       "      <td>[[51.56215585 21.81994993]\\n [51.61058468 21.9...</td>\n",
+       "      <td>[(373, 299), (373, 299), (374, 298), (377, 296...</td>\n",
+       "      <td>(1366, 683)</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>50002</th>\n",
+       "      <td>[21.834051590412855, 21.83392812497914, 21.833...</td>\n",
+       "      <td>[96.0, 97.2, 99.8, 103.6, 108.0, 114.2, 122.0,...</td>\n",
+       "      <td>[51.58304206095636, 51.58314616419375, 51.5832...</td>\n",
+       "      <td>run</td>\n",
+       "      <td>278163943</td>\n",
+       "      <td>[63, 68, 78, 86, 102, 104, 112, 124, 129, 129,...</td>\n",
+       "      <td>male</td>\n",
+       "      <td>[1387488342, 1387488347, 1387488351, 138748835...</td>\n",
+       "      <td>https://www.endomondo.com/users/5746423/workou...</td>\n",
+       "      <td>5746423</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>10.133904</td>\n",
+       "      <td>94.750000</td>\n",
+       "      <td>0.005726</td>\n",
+       "      <td>[[51.58072169 21.8312019 ]\\n [51.60856614 21.8...</td>\n",
+       "      <td>[(558, 645), (556, 643), (554, 643), (552, 644...</td>\n",
+       "      <td>(1366, 683)</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>50003</th>\n",
+       "      <td>[21.83403122238815, 21.83400247246027, 21.8336...</td>\n",
+       "      <td>[88.2, 88.2, 88.8, 89.6, 90.2, 91.0, 93.4, 93....</td>\n",
+       "      <td>[51.58312671817839, 51.58311640843749, 51.5828...</td>\n",
+       "      <td>run</td>\n",
+       "      <td>277676087</td>\n",
+       "      <td>[91, 94, 104, 118, 118, 124, 123, 142, 149, 14...</td>\n",
+       "      <td>male</td>\n",
+       "      <td>[1387314478, 1387314480, 1387314492, 138731449...</td>\n",
+       "      <td>https://www.endomondo.com/users/5746423/workou...</td>\n",
+       "      <td>5746423</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>9.925788</td>\n",
+       "      <td>89.833333</td>\n",
+       "      <td>0.003217</td>\n",
+       "      <td>[[51.55746215 21.80749037]\\n [51.58570601 21.8...</td>\n",
+       "      <td>[(124, 512), (124, 511), (129, 507), (131, 505...</td>\n",
+       "      <td>(1366, 683)</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>50004</th>\n",
+       "      <td>[21.8337263725698, 21.8337332457304, 21.833733...</td>\n",
+       "      <td>[2.4, 2.4, 3.6, 11.2, 16.4, 35.0, 45.0, 48.6, ...</td>\n",
+       "      <td>[51.583170806989074, 51.583179691806436, 51.58...</td>\n",
+       "      <td>run</td>\n",
+       "      <td>277436339</td>\n",
+       "      <td>[75, 75, 86, 104, 121, 124, 129, 135, 138, 138...</td>\n",
+       "      <td>male</td>\n",
+       "      <td>[1387226671, 1387226673, 1387226678, 138722669...</td>\n",
+       "      <td>https://www.endomondo.com/users/5746423/workou...</td>\n",
+       "      <td>5746423</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>10.634698</td>\n",
+       "      <td>99.433333</td>\n",
+       "      <td>0.011967</td>\n",
+       "      <td>[[51.57453323 21.82302158]\\n [51.61749548 21.8...</td>\n",
+       "      <td>[(460, 543), (460, 543), (460, 543), (457, 545...</td>\n",
+       "      <td>(1366, 683)</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "                                               longitude  \\\n",
+       "50000  [21.833996018394828, 21.833990653976798, 21.83...   \n",
+       "50001  [21.833832319825888, 21.8338143825531, 21.8336...   \n",
+       "50002  [21.834051590412855, 21.83392812497914, 21.833...   \n",
+       "50003  [21.83403122238815, 21.83400247246027, 21.8336...   \n",
+       "50004  [21.8337263725698, 21.8337332457304, 21.833733...   \n",
+       "\n",
+       "                                                altitude  \\\n",
+       "50000  [72.2, 72.2, 75.0, 79.6, 85.0, 86.2, 87.2, 87....   \n",
+       "50001  [96.6, 96.4, 94.8, 88.6, 87.6, 91.0, 98.4, 102...   \n",
+       "50002  [96.0, 97.2, 99.8, 103.6, 108.0, 114.2, 122.0,...   \n",
+       "50003  [88.2, 88.2, 88.8, 89.6, 90.2, 91.0, 93.4, 93....   \n",
+       "50004  [2.4, 2.4, 3.6, 11.2, 16.4, 35.0, 45.0, 48.6, ...   \n",
+       "\n",
+       "                                                latitude sport         id  \\\n",
+       "50000  [51.58289453946054, 51.58289462327957, 51.5828...   run  278936964   \n",
+       "50001  [51.58287308178842, 51.58286126330495, 51.5827...   run  278797765   \n",
+       "50002  [51.58304206095636, 51.58314616419375, 51.5832...   run  278163943   \n",
+       "50003  [51.58312671817839, 51.58311640843749, 51.5828...   run  277676087   \n",
+       "50004  [51.583170806989074, 51.583179691806436, 51.58...   run  277436339   \n",
+       "\n",
+       "                                              heart_rate gender  \\\n",
+       "50000  [72, 72, 76, 76, 76, 93, 107, 107, 115, 123, 1...   male   \n",
+       "50001  [72, 72, 86, 93, 105, 112, 127, 136, 140, 141,...   male   \n",
+       "50002  [63, 68, 78, 86, 102, 104, 112, 124, 129, 129,...   male   \n",
+       "50003  [91, 94, 104, 118, 118, 124, 123, 142, 149, 14...   male   \n",
+       "50004  [75, 75, 86, 104, 121, 124, 129, 135, 138, 138...   male   \n",
+       "\n",
+       "                                               timestamp  \\\n",
+       "50000  [1387809859, 1387809860, 1387809866, 138780987...   \n",
+       "50001  [1387739310, 1387739311, 1387739316, 138773933...   \n",
+       "50002  [1387488342, 1387488347, 1387488351, 138748835...   \n",
+       "50003  [1387314478, 1387314480, 1387314492, 138731449...   \n",
+       "50004  [1387226671, 1387226673, 1387226678, 138722669...   \n",
+       "\n",
+       "                                                     url   userId speed  \\\n",
+       "50000  https://www.endomondo.com/users/5746423/workou...  5746423   NaN   \n",
+       "50001  https://www.endomondo.com/users/5746423/workou...  5746423   NaN   \n",
+       "50002  https://www.endomondo.com/users/5746423/workou...  5746423   NaN   \n",
+       "50003  https://www.endomondo.com/users/5746423/workou...  5746423   NaN   \n",
+       "50004  https://www.endomondo.com/users/5746423/workou...  5746423   NaN   \n",
+       "\n",
+       "        distance    duration  start_end_dist  \\\n",
+       "50000   9.317126   90.850000        0.012225   \n",
+       "50001  15.735276  122.733333        0.019923   \n",
+       "50002  10.133904   94.750000        0.005726   \n",
+       "50003   9.925788   89.833333        0.003217   \n",
+       "50004  10.634698   99.433333        0.011967   \n",
+       "\n",
+       "                                                  bounds  \\\n",
+       "50000  [[51.55367888 21.82704032]\\n [51.58591306 21.8...   \n",
+       "50001  [[51.56215585 21.81994993]\\n [51.61058468 21.9...   \n",
+       "50002  [[51.58072169 21.8312019 ]\\n [51.60856614 21.8...   \n",
+       "50003  [[51.55746215 21.80749037]\\n [51.58570601 21.8...   \n",
+       "50004  [[51.57453323 21.82302158]\\n [51.61749548 21.8...   \n",
+       "\n",
+       "                                                route_xy   image_dims  \n",
+       "50000  [(95, 408), (95, 408), (97, 406), (100, 403), ...  (1366, 683)  \n",
+       "50001  [(373, 299), (373, 299), (374, 298), (377, 296...  (1366, 683)  \n",
+       "50002  [(558, 645), (556, 643), (554, 643), (552, 644...  (1366, 683)  \n",
+       "50003  [(124, 512), (124, 511), (129, 507), (131, 505...  (1366, 683)  \n",
+       "50004  [(460, 543), (460, 543), (460, 543), (457, 545...  (1366, 683)  "
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "df_50 = pd.read_csv('data/processed_routes_50000_75000.csv')\n",
+    "df_50.index = df_50.index + 50000\n",
+    "df_50['route_xy'] = df_50['route_xy'].apply(eval)\n",
+    "df_50 = df_50[df_50['route_xy'].apply(is_valid_tuple_list)]\n",
+    "\n",
+    "df_50.head()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [
+    {
+     "data": {
+      "text/html": [
+       "<div>\n",
+       "<style scoped>\n",
+       "    .dataframe tbody tr th:only-of-type {\n",
+       "        vertical-align: middle;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe tbody tr th {\n",
+       "        vertical-align: top;\n",
+       "    }\n",
+       "\n",
+       "    .dataframe thead th {\n",
+       "        text-align: right;\n",
+       "    }\n",
+       "</style>\n",
+       "<table border=\"1\" class=\"dataframe\">\n",
+       "  <thead>\n",
+       "    <tr style=\"text-align: right;\">\n",
+       "      <th></th>\n",
+       "      <th>index</th>\n",
+       "      <th>longitude</th>\n",
+       "      <th>altitude</th>\n",
+       "      <th>latitude</th>\n",
+       "      <th>sport</th>\n",
+       "      <th>id</th>\n",
+       "      <th>heart_rate</th>\n",
+       "      <th>gender</th>\n",
+       "      <th>timestamp</th>\n",
+       "      <th>url</th>\n",
+       "      <th>userId</th>\n",
+       "      <th>speed</th>\n",
+       "      <th>distance</th>\n",
+       "      <th>duration</th>\n",
+       "      <th>start_end_dist</th>\n",
+       "      <th>bounds</th>\n",
+       "      <th>route_xy</th>\n",
+       "      <th>image_dims</th>\n",
+       "    </tr>\n",
+       "  </thead>\n",
+       "  <tbody>\n",
+       "    <tr>\n",
+       "      <th>0</th>\n",
+       "      <td>0</td>\n",
+       "      <td>[6.8854929, 6.8853678, 6.8851621, 6.8848205, 6...</td>\n",
+       "      <td>[-173.8, -151.2, -161.6, -165.4, -168.6, -172....</td>\n",
+       "      <td>[52.2226809, 52.222727, 52.2228258, 52.2228606...</td>\n",
+       "      <td>run</td>\n",
+       "      <td>321063199</td>\n",
+       "      <td>[80, 81, 94, 100, 102, 112, 108, 114, 110, 109...</td>\n",
+       "      <td>male</td>\n",
+       "      <td>[1397079203, 1397079210, 1397079218, 139707922...</td>\n",
+       "      <td>https://www.endomondo.com/users/4969375/workou...</td>\n",
+       "      <td>4969375</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>5.361321</td>\n",
+       "      <td>64.800000</td>\n",
+       "      <td>0.094728</td>\n",
+       "      <td>[[52.22198626  6.87770508]\\n [52.23032194  6.8...</td>\n",
+       "      <td>[(604, 836), (600, 830), (593, 821), (590, 805...</td>\n",
+       "      <td>(1366, 683)</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>1</th>\n",
+       "      <td>1</td>\n",
+       "      <td>[6.9144073, 6.9142929, 6.9141539, 6.9140268, 6...</td>\n",
+       "      <td>[57.8, 57.6, 57.0, 56.4, 55.8, 55.2, 54.4, 53....</td>\n",
+       "      <td>[52.2111711, 52.2112631, 52.2114064, 52.211608...</td>\n",
+       "      <td>run</td>\n",
+       "      <td>303565793</td>\n",
+       "      <td>[60, 62, 92, 92, 132, 150, 150, 159, 159, 161,...</td>\n",
+       "      <td>male</td>\n",
+       "      <td>[1393908533, 1393908541, 1393908549, 139390855...</td>\n",
+       "      <td>https://www.endomondo.com/users/4969375/workou...</td>\n",
+       "      <td>4969375</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>8.844797</td>\n",
+       "      <td>70.066667</td>\n",
+       "      <td>0.002572</td>\n",
+       "      <td>[[52.20480767  6.8876639 ]\\n [52.22050043  6.9...</td>\n",
+       "      <td>[(368, 479), (366, 478), (363, 476), (359, 475...</td>\n",
+       "      <td>(1366, 683)</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>2</th>\n",
+       "      <td>2</td>\n",
+       "      <td>[6.9141348, 6.9145702, 6.9151684, 6.9158377, 6...</td>\n",
+       "      <td>[22.8, 26.4, 30.8, 35.6, 43.0, 48.4, 49.8, 49....</td>\n",
+       "      <td>[52.2110297, 52.2106325, 52.2102453, 52.209833...</td>\n",
+       "      <td>run</td>\n",
+       "      <td>302666522</td>\n",
+       "      <td>[77, 93, 107, 121, 118, 120, 120, 124, 124, 12...</td>\n",
+       "      <td>male</td>\n",
+       "      <td>[1393687929, 1393687948, 1393687967, 139368798...</td>\n",
+       "      <td>https://www.endomondo.com/users/4969375/workou...</td>\n",
+       "      <td>4969375</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>18.246353</td>\n",
+       "      <td>168.766667</td>\n",
+       "      <td>0.014032</td>\n",
+       "      <td>[[52.15315454  6.81053162]\\n [52.21811366  6.9...</td>\n",
+       "      <td>[(99, 921), (103, 923), (106, 927), (110, 931)...</td>\n",
+       "      <td>(1366, 683)</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>3</th>\n",
+       "      <td>3</td>\n",
+       "      <td>[6.8678543, 6.8678634, 6.8675429, 6.8672183, 6...</td>\n",
+       "      <td>[35.4, 35.2, 34.6, 34.2, 35.0, 35.2, 34.8, 34....</td>\n",
+       "      <td>[52.1936673, 52.1934354, 52.1931993, 52.192873...</td>\n",
+       "      <td>run</td>\n",
+       "      <td>296982347</td>\n",
+       "      <td>[75, 101, 116, 120, 124, 126, 127, 129, 126, 1...</td>\n",
+       "      <td>male</td>\n",
+       "      <td>[1392480163, 1392480176, 1392480189, 139248020...</td>\n",
+       "      <td>https://www.endomondo.com/users/4969375/workou...</td>\n",
+       "      <td>4969375</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>13.584195</td>\n",
+       "      <td>108.383333</td>\n",
+       "      <td>0.004041</td>\n",
+       "      <td>[[52.13008224  6.83269553]\\n [52.19944776  6.9...</td>\n",
+       "      <td>[(66, 681), (69, 681), (71, 679), (74, 677), (...</td>\n",
+       "      <td>(1366, 683)</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>4</th>\n",
+       "      <td>4</td>\n",
+       "      <td>[6.9143328, 6.9146396, 6.9148949, 6.9151568, 6...</td>\n",
+       "      <td>[63.0, 65.2, 66.0, 66.2, 65.8, 65.8, 67.0, 67....</td>\n",
+       "      <td>[52.2112195, 52.2110264, 52.2108135, 52.210601...</td>\n",
+       "      <td>run</td>\n",
+       "      <td>295890426</td>\n",
+       "      <td>[58, 83, 112, 115, 117, 116, 141, 121, 120, 11...</td>\n",
+       "      <td>male</td>\n",
+       "      <td>[1392180426, 1392180436, 1392180446, 139218045...</td>\n",
+       "      <td>https://www.endomondo.com/users/4969375/workou...</td>\n",
+       "      <td>4969375</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>10.438034</td>\n",
+       "      <td>85.300000</td>\n",
+       "      <td>0.010509</td>\n",
+       "      <td>[[52.20591959  6.88643614]\\n [52.22040011  6.9...</td>\n",
+       "      <td>[(377, 404), (381, 408), (385, 411), (389, 414...</td>\n",
+       "      <td>(1366, 683)</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>...</th>\n",
+       "      <td>...</td>\n",
+       "      <td>...</td>\n",
+       "      <td>...</td>\n",
+       "      <td>...</td>\n",
+       "      <td>...</td>\n",
+       "      <td>...</td>\n",
+       "      <td>...</td>\n",
+       "      <td>...</td>\n",
+       "      <td>...</td>\n",
+       "      <td>...</td>\n",
+       "      <td>...</td>\n",
+       "      <td>...</td>\n",
+       "      <td>...</td>\n",
+       "      <td>...</td>\n",
+       "      <td>...</td>\n",
+       "      <td>...</td>\n",
+       "      <td>...</td>\n",
+       "      <td>...</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>45547</th>\n",
+       "      <td>70586</td>\n",
+       "      <td>[11.764839207753539, 11.764889750629663, 11.76...</td>\n",
+       "      <td>[11.4, 11.4, 11.8, 12.2, 12.8, 12.6, 12.4, 12....</td>\n",
+       "      <td>[55.2407655492425, 55.240799244493246, 55.2410...</td>\n",
+       "      <td>run</td>\n",
+       "      <td>150501380</td>\n",
+       "      <td>[80, 81, 92, 110, 116, 120, 123, 125, 127, 130...</td>\n",
+       "      <td>male</td>\n",
+       "      <td>[1357905697, 1357905699, 1357905710, 135790572...</td>\n",
+       "      <td>https://www.endomondo.com/users/69/workouts/15...</td>\n",
+       "      <td>69</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>11.583194</td>\n",
+       "      <td>113.300000</td>\n",
+       "      <td>0.005758</td>\n",
+       "      <td>[[55.21507779 11.75632726]\\n [55.26483803 11.8...</td>\n",
+       "      <td>[(331, 434), (331, 434), (329, 436), (325, 438...</td>\n",
+       "      <td>(1366, 683)</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>45548</th>\n",
+       "      <td>70587</td>\n",
+       "      <td>[11.76487541, 11.76516151, 11.7653389, 11.7655...</td>\n",
+       "      <td>[11.0, 11.2, 11.4, 11.6, 11.9, 12.2, 12.1, 11....</td>\n",
+       "      <td>[55.24080276, 55.24095154, 55.24104691, 55.241...</td>\n",
+       "      <td>run</td>\n",
+       "      <td>596953078</td>\n",
+       "      <td>[76, 86, 99, 111, 120, 128, 133, 130, 128, 128...</td>\n",
+       "      <td>male</td>\n",
+       "      <td>[1333545094, 1333545104, 1333545109, 133354511...</td>\n",
+       "      <td>https://www.endomondo.com/users/69/workouts/59...</td>\n",
+       "      <td>69</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>9.903589</td>\n",
+       "      <td>85.366667</td>\n",
+       "      <td>0.003440</td>\n",
+       "      <td>[[55.23023109 11.74773016]\\n [55.28604622 11.8...</td>\n",
+       "      <td>[(517, 597), (516, 599), (515, 600), (513, 601...</td>\n",
+       "      <td>(1366, 683)</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>45549</th>\n",
+       "      <td>70588</td>\n",
+       "      <td>[11.7659976, 11.7660138, 11.766049, 11.7661367...</td>\n",
+       "      <td>[19.3638, 19.3638, 19.8444, 19.8444, 20.325, 1...</td>\n",
+       "      <td>[55.2510609, 55.251076, 55.2510986, 55.251162,...</td>\n",
+       "      <td>run</td>\n",
+       "      <td>30369221</td>\n",
+       "      <td>[98, 99, 99, 99, 99, 101, 103, 106, 111, 114, ...</td>\n",
+       "      <td>male</td>\n",
+       "      <td>[1323017480, 1323017481, 1323017482, 132301748...</td>\n",
+       "      <td>https://www.endomondo.com/users/69/workouts/30...</td>\n",
+       "      <td>69</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>1.732253</td>\n",
+       "      <td>11.666667</td>\n",
+       "      <td>0.286239</td>\n",
+       "      <td>[[55.24813588 11.75315173]\\n [55.26049372 11.7...</td>\n",
+       "      <td>[(473, 765), (472, 766), (471, 766), (469, 768...</td>\n",
+       "      <td>(1366, 683)</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>45550</th>\n",
+       "      <td>70589</td>\n",
+       "      <td>[11.5729073, 11.572923, 11.5729385, 11.5729821...</td>\n",
+       "      <td>[48.684, 48.684, 48.684, 48.2034, 48.2034, 47....</td>\n",
+       "      <td>[55.2986136, 55.2986417, 55.2986826, 55.298769...</td>\n",
+       "      <td>run</td>\n",
+       "      <td>24888434</td>\n",
+       "      <td>[102, 102, 102, 109, 110, 117, 117, 119, 119, ...</td>\n",
+       "      <td>male</td>\n",
+       "      <td>[1317828485, 1317828486, 1317828487, 131782848...</td>\n",
+       "      <td>https://www.endomondo.com/users/69/workouts/24...</td>\n",
+       "      <td>69</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>1.734742</td>\n",
+       "      <td>12.000000</td>\n",
+       "      <td>1.308956</td>\n",
+       "      <td>[[55.29669328 11.56458776]\\n [55.31973712 11.5...</td>\n",
+       "      <td>[(535, 698), (535, 698), (534, 698), (532, 698...</td>\n",
+       "      <td>(1366, 683)</td>\n",
+       "    </tr>\n",
+       "    <tr>\n",
+       "      <th>45551</th>\n",
+       "      <td>70590</td>\n",
+       "      <td>[11.7646691, 11.7647482, 11.764898, 11.7650011...</td>\n",
+       "      <td>[13.5958, 13.1151, 12.6344, 12.1538, 12.6344, ...</td>\n",
+       "      <td>[55.2406747, 55.2407376, 55.2408083, 55.240875...</td>\n",
+       "      <td>run</td>\n",
+       "      <td>20253456</td>\n",
+       "      <td>[139, 139, 140, 142, 144, 146, 148, 150, 151, ...</td>\n",
+       "      <td>male</td>\n",
+       "      <td>[1314153113, 1314153116, 1314153120, 131415312...</td>\n",
+       "      <td>https://www.endomondo.com/users/69/workouts/20...</td>\n",
+       "      <td>69</td>\n",
+       "      <td>NaN</td>\n",
+       "      <td>3.392985</td>\n",
+       "      <td>29.816667</td>\n",
+       "      <td>0.005956</td>\n",
+       "      <td>[[55.23814855 11.75327293]\\n [55.26134155 11.7...</td>\n",
+       "      <td>[(525, 704), (523, 705), (522, 706), (521, 708...</td>\n",
+       "      <td>(1366, 683)</td>\n",
+       "    </tr>\n",
+       "  </tbody>\n",
+       "</table>\n",
+       "<p>45552 rows × 18 columns</p>\n",
+       "</div>"
+      ],
+      "text/plain": [
+       "       index                                          longitude  \\\n",
+       "0          0  [6.8854929, 6.8853678, 6.8851621, 6.8848205, 6...   \n",
+       "1          1  [6.9144073, 6.9142929, 6.9141539, 6.9140268, 6...   \n",
+       "2          2  [6.9141348, 6.9145702, 6.9151684, 6.9158377, 6...   \n",
+       "3          3  [6.8678543, 6.8678634, 6.8675429, 6.8672183, 6...   \n",
+       "4          4  [6.9143328, 6.9146396, 6.9148949, 6.9151568, 6...   \n",
+       "...      ...                                                ...   \n",
+       "45547  70586  [11.764839207753539, 11.764889750629663, 11.76...   \n",
+       "45548  70587  [11.76487541, 11.76516151, 11.7653389, 11.7655...   \n",
+       "45549  70588  [11.7659976, 11.7660138, 11.766049, 11.7661367...   \n",
+       "45550  70589  [11.5729073, 11.572923, 11.5729385, 11.5729821...   \n",
+       "45551  70590  [11.7646691, 11.7647482, 11.764898, 11.7650011...   \n",
+       "\n",
+       "                                                altitude  \\\n",
+       "0      [-173.8, -151.2, -161.6, -165.4, -168.6, -172....   \n",
+       "1      [57.8, 57.6, 57.0, 56.4, 55.8, 55.2, 54.4, 53....   \n",
+       "2      [22.8, 26.4, 30.8, 35.6, 43.0, 48.4, 49.8, 49....   \n",
+       "3      [35.4, 35.2, 34.6, 34.2, 35.0, 35.2, 34.8, 34....   \n",
+       "4      [63.0, 65.2, 66.0, 66.2, 65.8, 65.8, 67.0, 67....   \n",
+       "...                                                  ...   \n",
+       "45547  [11.4, 11.4, 11.8, 12.2, 12.8, 12.6, 12.4, 12....   \n",
+       "45548  [11.0, 11.2, 11.4, 11.6, 11.9, 12.2, 12.1, 11....   \n",
+       "45549  [19.3638, 19.3638, 19.8444, 19.8444, 20.325, 1...   \n",
+       "45550  [48.684, 48.684, 48.684, 48.2034, 48.2034, 47....   \n",
+       "45551  [13.5958, 13.1151, 12.6344, 12.1538, 12.6344, ...   \n",
+       "\n",
+       "                                                latitude sport         id  \\\n",
+       "0      [52.2226809, 52.222727, 52.2228258, 52.2228606...   run  321063199   \n",
+       "1      [52.2111711, 52.2112631, 52.2114064, 52.211608...   run  303565793   \n",
+       "2      [52.2110297, 52.2106325, 52.2102453, 52.209833...   run  302666522   \n",
+       "3      [52.1936673, 52.1934354, 52.1931993, 52.192873...   run  296982347   \n",
+       "4      [52.2112195, 52.2110264, 52.2108135, 52.210601...   run  295890426   \n",
+       "...                                                  ...   ...        ...   \n",
+       "45547  [55.2407655492425, 55.240799244493246, 55.2410...   run  150501380   \n",
+       "45548  [55.24080276, 55.24095154, 55.24104691, 55.241...   run  596953078   \n",
+       "45549  [55.2510609, 55.251076, 55.2510986, 55.251162,...   run   30369221   \n",
+       "45550  [55.2986136, 55.2986417, 55.2986826, 55.298769...   run   24888434   \n",
+       "45551  [55.2406747, 55.2407376, 55.2408083, 55.240875...   run   20253456   \n",
+       "\n",
+       "                                              heart_rate gender  \\\n",
+       "0      [80, 81, 94, 100, 102, 112, 108, 114, 110, 109...   male   \n",
+       "1      [60, 62, 92, 92, 132, 150, 150, 159, 159, 161,...   male   \n",
+       "2      [77, 93, 107, 121, 118, 120, 120, 124, 124, 12...   male   \n",
+       "3      [75, 101, 116, 120, 124, 126, 127, 129, 126, 1...   male   \n",
+       "4      [58, 83, 112, 115, 117, 116, 141, 121, 120, 11...   male   \n",
+       "...                                                  ...    ...   \n",
+       "45547  [80, 81, 92, 110, 116, 120, 123, 125, 127, 130...   male   \n",
+       "45548  [76, 86, 99, 111, 120, 128, 133, 130, 128, 128...   male   \n",
+       "45549  [98, 99, 99, 99, 99, 101, 103, 106, 111, 114, ...   male   \n",
+       "45550  [102, 102, 102, 109, 110, 117, 117, 119, 119, ...   male   \n",
+       "45551  [139, 139, 140, 142, 144, 146, 148, 150, 151, ...   male   \n",
+       "\n",
+       "                                               timestamp  \\\n",
+       "0      [1397079203, 1397079210, 1397079218, 139707922...   \n",
+       "1      [1393908533, 1393908541, 1393908549, 139390855...   \n",
+       "2      [1393687929, 1393687948, 1393687967, 139368798...   \n",
+       "3      [1392480163, 1392480176, 1392480189, 139248020...   \n",
+       "4      [1392180426, 1392180436, 1392180446, 139218045...   \n",
+       "...                                                  ...   \n",
+       "45547  [1357905697, 1357905699, 1357905710, 135790572...   \n",
+       "45548  [1333545094, 1333545104, 1333545109, 133354511...   \n",
+       "45549  [1323017480, 1323017481, 1323017482, 132301748...   \n",
+       "45550  [1317828485, 1317828486, 1317828487, 131782848...   \n",
+       "45551  [1314153113, 1314153116, 1314153120, 131415312...   \n",
+       "\n",
+       "                                                     url   userId speed  \\\n",
+       "0      https://www.endomondo.com/users/4969375/workou...  4969375   NaN   \n",
+       "1      https://www.endomondo.com/users/4969375/workou...  4969375   NaN   \n",
+       "2      https://www.endomondo.com/users/4969375/workou...  4969375   NaN   \n",
+       "3      https://www.endomondo.com/users/4969375/workou...  4969375   NaN   \n",
+       "4      https://www.endomondo.com/users/4969375/workou...  4969375   NaN   \n",
+       "...                                                  ...      ...   ...   \n",
+       "45547  https://www.endomondo.com/users/69/workouts/15...       69   NaN   \n",
+       "45548  https://www.endomondo.com/users/69/workouts/59...       69   NaN   \n",
+       "45549  https://www.endomondo.com/users/69/workouts/30...       69   NaN   \n",
+       "45550  https://www.endomondo.com/users/69/workouts/24...       69   NaN   \n",
+       "45551  https://www.endomondo.com/users/69/workouts/20...       69   NaN   \n",
+       "\n",
+       "        distance    duration  start_end_dist  \\\n",
+       "0       5.361321   64.800000        0.094728   \n",
+       "1       8.844797   70.066667        0.002572   \n",
+       "2      18.246353  168.766667        0.014032   \n",
+       "3      13.584195  108.383333        0.004041   \n",
+       "4      10.438034   85.300000        0.010509   \n",
+       "...          ...         ...             ...   \n",
+       "45547  11.583194  113.300000        0.005758   \n",
+       "45548   9.903589   85.366667        0.003440   \n",
+       "45549   1.732253   11.666667        0.286239   \n",
+       "45550   1.734742   12.000000        1.308956   \n",
+       "45551   3.392985   29.816667        0.005956   \n",
+       "\n",
+       "                                                  bounds  \\\n",
+       "0      [[52.22198626  6.87770508]\\n [52.23032194  6.8...   \n",
+       "1      [[52.20480767  6.8876639 ]\\n [52.22050043  6.9...   \n",
+       "2      [[52.15315454  6.81053162]\\n [52.21811366  6.9...   \n",
+       "3      [[52.13008224  6.83269553]\\n [52.19944776  6.9...   \n",
+       "4      [[52.20591959  6.88643614]\\n [52.22040011  6.9...   \n",
+       "...                                                  ...   \n",
+       "45547  [[55.21507779 11.75632726]\\n [55.26483803 11.8...   \n",
+       "45548  [[55.23023109 11.74773016]\\n [55.28604622 11.8...   \n",
+       "45549  [[55.24813588 11.75315173]\\n [55.26049372 11.7...   \n",
+       "45550  [[55.29669328 11.56458776]\\n [55.31973712 11.5...   \n",
+       "45551  [[55.23814855 11.75327293]\\n [55.26134155 11.7...   \n",
+       "\n",
+       "                                                route_xy   image_dims  \n",
+       "0      [(604, 836), (600, 830), (593, 821), (590, 805...  (1366, 683)  \n",
+       "1      [(368, 479), (366, 478), (363, 476), (359, 475...  (1366, 683)  \n",
+       "2      [(99, 921), (103, 923), (106, 927), (110, 931)...  (1366, 683)  \n",
+       "3      [(66, 681), (69, 681), (71, 679), (74, 677), (...  (1366, 683)  \n",
+       "4      [(377, 404), (381, 408), (385, 411), (389, 414...  (1366, 683)  \n",
+       "...                                                  ...          ...  \n",
+       "45547  [(331, 434), (331, 434), (329, 436), (325, 438...  (1366, 683)  \n",
+       "45548  [(517, 597), (516, 599), (515, 600), (513, 601...  (1366, 683)  \n",
+       "45549  [(473, 765), (472, 766), (471, 766), (469, 768...  (1366, 683)  \n",
+       "45550  [(535, 698), (535, 698), (534, 698), (532, 698...  (1366, 683)  \n",
+       "45551  [(525, 704), (523, 705), (522, 706), (521, 708...  (1366, 683)  \n",
+       "\n",
+       "[45552 rows x 18 columns]"
+      ]
+     },
+     "metadata": {},
+     "output_type": "display_data"
+    }
+   ],
+   "source": [
+    "both_dfs = pd.concat([df, df_50])\n",
+    "both_dfs = both_dfs.reset_index(drop=False, names='index')\n",
+    "both_dfs"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "both_dfs.to_csv('data/processed_combined.csv')"
+   ]
+  }
+ ],
+ "metadata": {
+  "language_info": {
+   "name": "python"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 2
+}
+</file>
+
+<file path="route_generator.py">
+import json
+import torch
+import torchvision.transforms as transforms
+from PIL import Image
+import matplotlib.pyplot as plt
+import argparse
+import os
+import numpy as np
+
+# Import the model architecture from the main script
+# Assuming you've saved the model definition in route_cgan_model.py
+from cgan import Generator
+
+
+def load_model(model_path, device):
+    """
+    Load a trained generator model
+    """
+    generator = Generator().to(device)
+    
+    # Load the state dict
+    generator.load_state_dict(torch.load(model_path, map_location=device))
+    
+    # Set to evaluation mode
+    generator.eval()
+    
+    return generator
+
+
+def generate_route(generator, map_path, conditions, device, normalize_stats=None):
+    """
+    Generate a route on a map with specified conditions
+    
+    Args:
+        generator: Trained generator model
+        map_path: Path to the map image
+        conditions: List of [distance, duration, start_end_dist, heart_rate]
+        device: Torch device
+        normalize_stats: Optional normalization statistics for conditions
+    
+    Returns:
+        Generated route as numpy array, Map as numpy array
+    """
+    # Load and preprocess the map
+    transform = transforms.Compose([
+        transforms.Resize((683, 1366)),
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    ])
+    
+    map_img = Image.open(map_path).convert('RGB')
+    map_tensor = transform(map_img).unsqueeze(0).to(device)
+    
+    # Get image dimensions for later denormalization
+    img_width, img_height = map_img.size
+    
+    # Normalize conditions if normalization stats are provided
+    if normalize_stats:
+        normalized_conditions = []
+        condition_names = ['distance', 'duration', 'start_end_dist', 'heart_rate']
+        
+        for i, (name, value) in enumerate(zip(condition_names, conditions)):
+            if name in normalize_stats:
+                min_val = normalize_stats[name]['min']
+                max_val = normalize_stats[name]['max']
+                if max_val > min_val:
+                    normalized_val = (value - min_val) / (max_val - min_val)
+                else:
+                    normalized_val = value
+                normalized_conditions.append(normalized_val)
+            else:
+                normalized_conditions.append(value)
+        
+        conditions = normalized_conditions
+    
+    # Convert conditions to tensor
+    conditions_tensor = torch.tensor(conditions, dtype=torch.float32).unsqueeze(0).to(device)
+    
+    # Generate random noise
+    noise = torch.randn(1, 128).to(device)
+    
+    # Generate route
+    with torch.no_grad():
+        generated_route = generator(map_tensor, conditions_tensor, noise)
+    
+    # Convert to numpy for visualization
+    route_np = generated_route.squeeze(0).cpu().numpy()
+    map_np = map_tensor.squeeze(0).permute(1, 2, 0).cpu().numpy()
+    map_np = (map_np * 0.5) + 0.5  # Unnormalize
+    
+    # Denormalize route coordinates to pixel values
+    route_pixels = route_np.copy()
+    route_pixels[:, 0] *= img_width
+    route_pixels[:, 1] *= img_height
+    
+    return route_pixels, map_np
+
+
+def visualize_route(route, map_img, save_path=None):
+    """
+    Visualize the generated route on the map
+    """
+    plt.figure(figsize=(15, 10))
+    
+    # Display the map
+    plt.imshow(map_img)
+    
+    # Overlay the route (scale coordinates to map dimensions)
+    plt.plot(route[:, 0] * map_img.shape[1], route[:, 1] * map_img.shape[0], 'r-', linewidth=2)
+    
+    plt.title("Generated Running Route")
+    plt.axis('off')
+    
+    if save_path:
+        plt.savefig(save_path)
+        print(f"Saved visualization to {save_path}")
+    
+    plt.show()
+
+
+def save_route_to_csv(route, map_dimensions, output_path):
+    """
+    Save the generated route to a CSV file
+    Converts the normalized [0,1] coordinates back to image pixel coordinates
+    """
+    # Scale route to image dimensions
+    width, height = map_dimensions
+    route_pixels = route.copy()
+    route_pixels[:, 0] *= width
+    route_pixels[:, 1] *= height
+    
+    # Save to CSV
+    with open(output_path, 'w') as f:
+        f.write("point_id,x,y\n")
+        for i, (x, y) in enumerate(route_pixels):
+            f.write(f"{i},{x:.2f},{y:.2f}\n")
+    
+    print(f"Saved route coordinates to {output_path}")
+    
+    return route_pixels
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate running routes using a trained CGAN model")
+    parser.add_argument("--model", type=str, required=True, help="Path to the trained generator model")
+    parser.add_argument("--map", type=str, required=True, help="Path to the map image")
+    parser.add_argument("--output", type=str, default="generated_route", help="Output prefix for saved files")
+    parser.add_argument("--distance", type=float, default=5.0, help="Route distance (km)")
+    parser.add_argument("--duration", type=float, default=30.0, help="Route duration (minutes)")
+    parser.add_argument("--start_end_dist", type=float, default=0.1, help="Start-end distance")
+    parser.add_argument("--heart_rate", type=float, default=150.0, help="Average heart rate")
+    parser.add_argument("--norm_stats", type=str, help="Path to normalization statistics JSON file")
+    
+    args = parser.parse_args()
+    
+    # Set device
+    # Check if GPU is available, else MPS, else CPU
+    if torch.backends.mps.is_available():
+        device = torch.device("mps")
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+    print(f"Using device: {device}")
+    
+    # Load the generator model
+    generator = load_model(args.model, device)
+    print("Model loaded successfully")
+    
+    # Load normalization statistics if provided
+    norm_stats = None
+    if args.norm_stats and os.path.exists(args.norm_stats):
+        with open(args.norm_stats, 'r') as f:
+            norm_stats = json.load(f)
+        print("Loaded normalization statistics")
+    
+    # Prepare conditions
+    conditions = [args.distance, args.duration, args.start_end_dist, args.heart_rate]
+    
+    # Generate route
+    route, map_np = generate_route(generator, args.map, conditions, device)
+    print(f"Generated route with {len(route)} points")
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(os.path.dirname(args.output) if os.path.dirname(args.output) else '.', exist_ok=True)
+    
+    # Visualize and save the route
+    visualize_route(route, map_np, f"{args.output}.png")
+    
+    # Save route coordinates to CSV
+    save_route_to_csv(route, (map_np.shape[1], map_np.shape[0]), f"{args.output}.csv")
+
+
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="simple_cgan.py">
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+import torchvision.transforms as transforms
+from PIL import Image
+import pandas as pd
+import numpy as np
+import os
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+import time
+import datetime
+
+def is_valid_tuple_list(item):
+    if not isinstance(item, list):
+        return False
+    if len(item) != 500:
+        return False
+    for t in item:
+        if not (isinstance(t, tuple) and len(t) == 2):
+            return False
+        if not all(isinstance(x, int) for x in t):
+            return False
+    return True
+    
+class RunningRouteDataset(Dataset):
+    def __init__(self, csv_path, img_dirs, transform=None, verbose=False):
+        """
+        Dataset for running routes and map images
+        
+        Args:
+            csv_path: Path to CSV file with metadata and route information
+            img_dir: Directory containing map images
+            transform: Transforms to apply to images
+            verbose: Whether to print verbose logs during data loading
+        """
+        print(f"Loading dataset from {csv_path}...")
+        self.data = pd.read_csv(csv_path)
+        self.data = self.data.iloc[0:1000, :]
+        self.data['route_xy'] = self.data['route_xy'].apply(eval)
+        self.img_dirs = img_dirs
+        self.transform = transform
+        self.verbose = verbose
+        
+        print(f"Processing heart rate data for {len(self.data)} routes...")
+        # Preprocess heart_rate data
+        self.data['avg_heart_rate'] = self.data['heart_rate'].apply(
+            lambda x: np.mean(eval(x)) if isinstance(x, str) else (
+                np.mean(x) if isinstance(x, list) else x
+            )
+        )
+        print("Dataset preparation complete!")
+        
+
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        # Get the row from the dataframe
+        row = self.data.iloc[idx]
+        
+        # Load image
+        if self.verbose:
+            print(f"Loading image for index {idx}")
+        
+        img_id = row['index']
+        
+        if self.verbose:
+            print(f"Image ID: {img_id}")
+        
+        if img_id > 50425:
+            img_path = os.path.join(self.img_dirs[1], f"map{img_id}.png")
+        else:
+            img_path = os.path.join(self.img_dirs[0], f"map{img_id}.png")
+
+        image = Image.open(img_path).convert('RGB')
+        
+        if self.transform:
+            image = self.transform(image)
+        
+        # Get route coordinates
+        route_xy = np.array(eval(row['route_xy'])) if isinstance(row['route_xy'], str) else row['route_xy']
+        route_xy = torch.tensor(route_xy, dtype=torch.float32)
+        
+        # Get conditional parameters
+        distance = torch.tensor([row['distance']], dtype=torch.float32)
+        duration = torch.tensor([row['duration']], dtype=torch.float32)
+        start_end = torch.tensor([row['start_end_dist']], dtype=torch.float32)
+        heart_rate = torch.tensor([row['avg_heart_rate']], dtype=torch.float32)
+        
+        # Combine conditions into one tensor
+        conditions = torch.cat([distance, route_xy[0], route_xy[-1]], dim=0)
+        
+        return {
+            'image': image,
+            'route': route_xy,
+            'conditions': conditions
+        }
+
+
+class Generator_simple(nn.Module):
+    def __init__(self):
+        super(Generator_simple, self).__init__()
+        
+        self.map_encoder = nn.Sequential(
+            # Convolutional layer 1
+            nn.Conv2d(in_channels=3, out_channels=8, kernel_size=3, stride=1, padding=1),  # Output size: 1366x683x16
+            nn.ReLU(),  # Activation
+            nn.MaxPool2d(kernel_size=2, stride=2, padding=0),  # Max pooling: reduces spatial dimensions by half
+            
+            # Convolutional layer 2
+            nn.Conv2d(in_channels=8, out_channels=16, kernel_size=3, stride=1, padding=1),  # Output size: 683x341x32
+            nn.ReLU(),  # Activation
+            nn.MaxPool2d(kernel_size=2, stride=2, padding=0),  # Max pooling: reduces spatial dimensions by half
+
+            # Convolutional layer 3
+            nn.Conv2d(in_channels=16, out_channels=32, kernel_size=3, stride=1, padding=1),  # Output size: 341x170x64
+            nn.ReLU(),  # Activation
+            nn.MaxPool2d(kernel_size=2, stride=2, padding=0),  # Max pooling: reduces spatial dimensions by half
+
+            # Fully connected layers
+            nn.Flatten(),  # Flatten the 3D tensor to a 1D tensor
+            nn.Linear(32 * 170 * 85, 2000),  # Reduced fully connected layer
+        )
+
+
+        self.feed_forward = nn.Sequential(
+            nn.Linear(2000 + 128 + 5, 1000),  # Reduced input to feed forward
+            nn.ReLU(),
+            nn.Linear(1000, 1000),
+            nn.ReLU(),
+            nn.Linear(1000, 500 * 2)  # No activation, allow full range of coordinates
+
+        )
+        
+
+        
+    def forward(self, map_img, conditions, noise):
+        # Encode the map image
+        map_features = self.map_encoder(map_img)
+        map_features = map_features.view(map_features.size(0), -1)  # Flatten
+                
+        # Concatenate all features
+        combined_features = torch.cat([map_features, conditions, noise], dim=1)
+        
+        route = self.feed_forward(combined_features)
+        route = route.view(-1, 500, 2)
+        
+        # Instead of scaling from [0,1] to image dimensions, 
+        # use tanh to constrain to [-1,1] then scale to image dimensions
+        route = torch.tanh(route)  # Constrain to [-1,1]
+        
+        # Scale to image dimensions (centered with reasonable bounds)
+        image_size = torch.tensor([1366, 683], device=route.device)
+        route = (route + 1) * 0.5 * (image_size * 0.8) + (image_size * 0.1)
+        
+        return route
+
+
+    
+class Discriminator_simple(nn.Module):
+    def __init__(self):
+        super(Discriminator_simple, self).__init__()
+        
+        self.map_encoder = nn.Sequential(
+            # Convolutional layer 1
+            nn.Conv2d(in_channels=3, out_channels=8, kernel_size=3, stride=1, padding=1),  # Output size: 1366x683x16
+            nn.ReLU(),  # Activation
+            nn.MaxPool2d(kernel_size=2, stride=2, padding=0),  # Max pooling: reduces spatial dimensions by half
+            
+            # Convolutional layer 2
+            nn.Conv2d(in_channels=8, out_channels=16, kernel_size=3, stride=1, padding=1),  # Output size: 683x341x32
+            nn.ReLU(),  # Activation
+            nn.MaxPool2d(kernel_size=2, stride=2, padding=0),  # Max pooling: reduces spatial dimensions by half
+
+            # Convolutional layer 3
+            nn.Conv2d(in_channels=16, out_channels=32, kernel_size=3, stride=1, padding=1),  # Output size: 341x170x64
+            nn.ReLU(),  # Activation
+            nn.MaxPool2d(kernel_size=2, stride=2, padding=0),  # Max pooling: reduces spatial dimensions by half
+
+            # Fully connected layers
+            nn.Flatten(),  # Flatten the 3D tensor to a 1D tensor
+            nn.Linear(32 * 170 * 85, 2000),  # Reduced fully connected layer
+        )
+
+        self.feed_forward = nn.Sequential(
+            nn.Linear(2000 + 5 + 1000, 1000),  # Reduced input to feed forward
+            nn.ReLU(),
+            nn.Linear(1000, 100),  # Reduced layer size
+            nn.ReLU(),
+            nn.Linear(100, 1),  # Output layer with a single unit
+        )
+        
+    def forward(self, route, map_img, conditions):
+        
+        # Encode map
+        map_features = self.map_encoder(map_img)
+
+        route = route.view(route.size(0), -1)  # Flatten route
+        
+        combined = torch.cat([map_features, conditions, route], dim=1)
+        
+        # Get outputs
+        validity = torch.sigmoid(self.feed_forward(combined))
+
+        
+        return validity
+
+
+
+def weights_init(m):
+    """
+    Initialize network weights with a normal distribution
+    """
+    classname = m.__class__.__name__
+    if classname.find('Conv') != -1:
+        nn.init.normal_(m.weight.data, 0.0, 0.02)
+    elif classname.find('BatchNorm') != -1:
+        nn.init.normal_(m.weight.data, 1.0, 0.02)
+        nn.init.constant_(m.bias.data, 0)
+    elif classname.find('Linear') != -1:
+        nn.init.normal_(m.weight.data, 0.0, 0.02)
+        if m.bias is not None:
+            nn.init.constant_(m.bias.data, 0)
+
+def train_cgan_simple(data_loader, num_epochs=100, lr=0.0002, beta1=0.5, beta2=0.999, 
+               device='cuda', save_interval=10, save_dir='models'):
+    """
+    Train the CGAN model with improved progress logging
+    """
+    # Initialize models
+    print("Initializing generator and discriminator models...")
+    generator = Generator_simple().to(device)
+    discriminator = Discriminator_simple().to(device)
+    
+    # Apply weight initialization
+    print("Applying weight initialization...")
+    generator.apply(weights_init)
+    discriminator.apply(weights_init)
+    
+    # Adjust your learning rates and optimizer parameters
+    optimizer_G = optim.Adam(generator.parameters(), lr=0.0001, betas=(0.5, 0.999))
+    optimizer_D = optim.Adam(discriminator.parameters(), lr=0.0001, betas=(0.5, 0.999))
+    
+    # Loss functions
+    adversarial_loss = nn.BCELoss()
+    
+    # Create log dictionaries
+    losses = {'G': [], 'D': []}
+    
+    # Ensure save directory exists
+    os.makedirs(save_dir, exist_ok=True)
+    
+    print(f"Starting training for {num_epochs} epochs...")
+    start_time = time.time()
+    
+    # Calculate total number of batches
+    total_batches = len(data_loader)
+    
+    # Training loop
+    for epoch in range(num_epochs):
+        epoch_start_time = time.time()
+        
+        # Initialize epoch metrics
+        epoch_g_loss = 0.0
+        epoch_d_loss = 0.0
+        
+        # Progress bar for this epoch
+        progress_bar = tqdm(
+            enumerate(data_loader), 
+            total=total_batches,
+            desc=f"Epoch {epoch+1}/{num_epochs}",
+            leave=True
+        )
+        
+        for i, batch in progress_bar:
+            # Get batch data
+            real_maps = batch['image'].to(device)
+            real_routes = batch['route'].to(device)
+            print(real_routes[0][0])
+            conditions = batch['conditions'].to(device)
+            
+            # Configure input
+            batch_size = real_maps.size(0)
+            real_labels = torch.ones(batch_size, 1).to(device) * 0.9
+            fake_labels = torch.zeros(batch_size, 1).to(device) + 0.1
+
+
+            
+            # Generate noise
+            noise = torch.randn(batch_size, 128).to(device)
+            
+            # -----------------
+            # Train Generator
+            # -----------------
+            optimizer_G.zero_grad()
+            
+            # Generate fake routes
+            gen_routes = generator(real_maps, conditions, noise)
+
+            # Ensure the tensor is on CPU, detached from the computation graph, and convert to NumPy
+            route_numpy = gen_routes[0].cpu().detach().numpy()
+
+            # Optionally round the values if you're expecting integer coordinates (or if you want to cast them)
+            route_numpy_int = route_numpy.round().astype(int)
+
+            print(route_numpy_int[0])
+            
+            # Discriminator evaluates generated routes
+            validity = discriminator(gen_routes, real_maps, conditions)
+            
+            # Calculate generator losses
+            g_loss = adversarial_loss(validity, real_labels)
+            
+            # Combined loss with auxiliary losses
+            g_total_loss = g_loss
+            # g_total_loss = g_loss
+            
+            g_total_loss.backward()
+
+            torch.nn.utils.clip_grad_norm_(generator.parameters(), max_norm=1.0)
+
+            optimizer_G.step()
+            
+            # -----------------
+            # Train Discriminator
+            # -----------------
+            optimizer_D.zero_grad()
+            
+            # Discriminator evaluates real routes
+            real_validity = discriminator(real_routes, real_maps, conditions)
+            
+            # Discriminator evaluates generated routes (detached to avoid training G again)
+            fake_validity = discriminator(gen_routes.detach(), real_maps, conditions)
+            
+            # Calculate discriminator losses
+            d_real_loss = adversarial_loss(real_validity, real_labels)
+            d_fake_loss = adversarial_loss(fake_validity, fake_labels)
+            d_loss = (d_real_loss + d_fake_loss) / 2
+        
+            
+            # Total discriminator loss
+            d_total_loss = d_loss
+            
+            d_total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(discriminator.parameters(), max_norm=1.0)
+
+            optimizer_D.step()
+            
+            # Save losses
+            losses['G'].append(g_loss.item())
+            losses['D'].append(d_loss.item())
+            
+            # Update epoch losses
+            epoch_g_loss += g_loss.item()
+            epoch_d_loss += d_loss.item()
+            
+            # Update progress bar with current batch losses
+            progress_bar.set_postfix({
+                'G': f"{g_loss.item():.4f}",
+                'D': f"{d_loss.item():.4f}",
+            })
+        
+        # Calculate average epoch losses
+        avg_g_loss = epoch_g_loss / total_batches
+        avg_d_loss = epoch_d_loss / total_batches
+        
+        # Calculate epoch time
+        epoch_time = time.time() - epoch_start_time
+        
+        # Calculate estimated time remaining
+        avg_epoch_time = (time.time() - start_time) / (epoch + 1)
+        epochs_remaining = num_epochs - (epoch + 1)
+        est_time_remaining = avg_epoch_time * epochs_remaining
+        est_time_str = str(datetime.timedelta(seconds=int(est_time_remaining)))
+        
+        # Print epoch summary
+        print(f"\n{'-'*80}")
+        print(f"Epoch {epoch+1}/{num_epochs} completed in {epoch_time:.2f} seconds")
+        print(f"Avg losses - Generator: {avg_g_loss:.4f}, Discriminator: {avg_d_loss:.4f}")
+        print(f"Estimated time remaining: {est_time_str} (completion around {datetime.datetime.now() + datetime.timedelta(seconds=est_time_remaining):%Y-%m-%d %H:%M:%S})")
+        
+        # Save models periodically
+        if epoch % save_interval == 0 or epoch == num_epochs - 1:
+            print(f"Saving model checkpoints for epoch {epoch+1}...")
+            torch.save(generator.state_dict(), f"{save_dir}/generator_{epoch}.pt")
+            torch.save(discriminator.state_dict(), f"{save_dir}/discriminator_{epoch}.pt")
+            
+        # Save a sample of generated routes
+        print("Generating sample routes...")
+        with torch.no_grad():
+            num_examples = min(4, batch_size)
+            sample_maps = real_maps[:num_examples]  # Take first 4 maps from last batch
+            sample_conditions = conditions[:num_examples]
+            sample_noise = torch.randn(num_examples, 128).to(device)
+            sample_routes = generator(sample_maps, sample_conditions, sample_noise)
+            
+            # Visualize and save sample routes
+            sample_path = f"{save_dir}/sample_epoch_{epoch}.png"
+            visualize_routes(sample_maps, sample_routes, sample_path)
+            print(f"Sample routes saved to {sample_path}")
+    
+    # Calculate total training time
+    total_time = time.time() - start_time
+    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+    
+    print(f"{'-'*80}")
+    print(f"Training completed in {total_time_str}")
+    print(f"Final losses - Generator: {avg_g_loss:.4f}, Discriminator: {avg_d_loss:.4f}")
+    
+    return generator, discriminator, losses
+
+
+def visualize_routes(maps, routes, save_path=None):
+    """
+    Visualize generated routes on maps
+    """
+    fig, axes = plt.subplots(len(routes), 1, figsize=(10, 5 * len(routes)))
+    
+    if len(routes) == 1:
+        axes = [axes]
+    
+    for i, (map_img, route) in enumerate(zip(maps, routes)):
+        # Convert map from tensor to numpy for visualization
+
+        map_np = map_img.cpu().permute(1, 2, 0).numpy()
+        # print(map_np.shape)
+        
+        # Convert route from tensor to numpy of integers
+        route_np = route.cpu().numpy()
+        route_np = route_np.astype(int)
+
+        # print(route_np)
+        
+        # Display the map
+        axes[i].imshow(map_np)
+        
+        # Overlay the route
+        # axes[i].plot(route_np[:, 0] * map_np.shape[1], route_np[:, 1] * map_np.shape[0], 'r-', linewidth=2)
+        axes[i].plot(route_np[:, 0], route_np[:, 1], 'r-', linewidth=1)
+        
+        axes[i].set_title(f"Generated Route {i+1}")
+        axes[i].axis('off')
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path)
+        plt.close()
+    else:
+        plt.show()
+
+
+def main():
+    # Check if GPU is available, else MPS, else CPU
+    if torch.backends.mps.is_available():
+        device = torch.device("mps")
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+    
+    print(f"Using device: {device}")
+    print(f"{'-'*80}")
+    
+    # Configuration
+    data_path = "data/processed_combined.csv"
+    img_dir1 = "image_data/images0_25000"
+    img_dir2 = "image_data"
+    batch_size = 16
+    num_epochs = 100
+    
+    print(f"Configuration:")
+    print(f"- Data: {data_path}")
+    # print(f"- Images: {img_dir}")
+    print(f"- Batch size: {batch_size}")
+    print(f"- Epochs: {num_epochs}")
+    print(f"{'-'*80}")
+    
+    # Image transformations
+    transform = transforms.Compose([
+        transforms.Resize((683, 1366)),
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    ])
+    
+    # Create dataset and dataloader
+    dataset = RunningRouteDataset(data_path, [img_dir1, img_dir2], transform=transform, verbose=False)
+    
+    print(f"Creating data loader with {len(dataset)} samples")
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
+    
+    # Train the model
+    print(f"{'-'*80}")
+    generator, discriminator, losses = train_cgan_simple(
+        dataloader, 
+        num_epochs=num_epochs, 
+        device=device,
+        save_dir='models',
+        save_interval=2
+    )
+    
+    # Save final models
+    print("Saving final models...")
+    torch.save(generator.state_dict(), "models/generator_final.pt")
+    torch.save(discriminator.state_dict(), "models/discriminator_final.pt")
+    
+    # Plot losses
+    print("Generating loss plot...")
+    plt.figure(figsize=(10, 5))
+    plt.plot(losses['G'], label='Generator Loss')
+    plt.plot(losses['D'], label='Discriminator Loss')
+    plt.plot(losses['aux'], label='Auxiliary Loss')
+    plt.xlabel('Iterations')
+    plt.ylabel('Loss')
+    plt.legend()
+    
+    loss_plot_path = "models/training_losses.png"
+    plt.savefig(loss_plot_path)
+    print(f"Loss plot saved to {loss_plot_path}")
+    
+    print(f"{'-'*80}")
+    print("Training complete!")
+
+
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="lstm.py">
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+import torchvision.transforms as transforms
+from PIL import Image
+import pandas as pd
+import numpy as np
+import os
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+import time
+import datetime
+
+class RunningRouteDataset(Dataset):
+    def __init__(self, csv_path, img_dirs, transform=None, verbose=False):
+        """
+        Dataset for running routes and map images
+        
+        Args:
+            csv_path: Path to CSV file with metadata and route information
+            img_dirs: List of directories containing map images
+            transform: Transforms to apply to images
+            verbose: Whether to print verbose logs during data loading
+        """
+        print(f"Loading dataset from {csv_path}...")
+        self.data = pd.read_csv(csv_path)
+        # self.data = self.data.iloc[0:1000, :]
+        self.data['route_xy'] = self.data['route_xy'].apply(eval)
+        self.img_dirs = img_dirs
+        self.transform = transform
+        self.verbose = verbose
+        
+        print(f"Processing heart rate data for {len(self.data)} routes...")
+        # Preprocess heart_rate data
+        self.data['avg_heart_rate'] = self.data['heart_rate'].apply(
+            lambda x: np.mean(eval(x)) if isinstance(x, str) else (
+                np.mean(x) if isinstance(x, list) else x
+            )
+        )
+        print("Dataset preparation complete!")
+
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        # Get the row from the dataframe
+        row = self.data.iloc[idx]
+        
+        # Load image
+        img_id = row['index']
+        
+        if self.verbose:
+            print(f"Loading image for index {idx}, Image ID: {img_id}")
+        
+        if img_id > 50425:
+            img_path = os.path.join(self.img_dirs[1], f"map{img_id}.png")
+        else:
+            img_path = os.path.join(self.img_dirs[0], f"map{img_id}.png")
+
+        image = Image.open(img_path).convert('RGB')
+        
+        if self.transform:
+            image = self.transform(image)
+        
+        # Get route coordinates
+        route_xy = np.array(eval(row['route_xy'])) if isinstance(row['route_xy'], str) else row['route_xy']
+        route_tensor = torch.tensor(route_xy, dtype=torch.float32)
+        
+        # Get conditional parameters
+        distance = torch.tensor([row['distance']], dtype=torch.float32)
+        
+        # Extract start and end points
+        start_point = torch.tensor(route_xy[0], dtype=torch.float32)
+        end_point = torch.tensor(route_xy[-1], dtype=torch.float32)
+        
+        # Combine conditions into one tensor
+        conditions = torch.cat([distance, start_point, end_point], dim=0)
+        
+        # Create input-target pairs for sequence learning
+        # Input: all coordinates except the last one
+        # Target: all coordinates except the first one
+        input_seq = route_tensor[:-1]
+        target_seq = route_tensor[1:]
+        
+        return {
+            'image': image,
+            'route': route_tensor,
+            'input_seq': input_seq,
+            'target_seq': target_seq,
+            'conditions': conditions,
+            'seq_length': len(route_xy)
+        }
+
+
+class MapEncoder(nn.Module):
+    """Encodes the map image into a feature representation"""
+    def __init__(self, output_dim=256):
+        super(MapEncoder, self).__init__()
+        
+        self.conv_layers = nn.Sequential(
+            # Layer 1
+            nn.Conv2d(in_channels=3, out_channels=16, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(16),
+            nn.ReLU(),
+            
+            # Layer 2
+            nn.Conv2d(in_channels=16, out_channels=32, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(),
+            
+            # Layer 3
+            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            
+            # Layer 4
+            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=2, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+        )
+        
+        # Calculate the flattened size - for 683x1366 input
+        # After 4 stride-2 layers: 43x86x128
+        self.flattened_size = 128 * 43 * 86
+        
+        self.fc = nn.Sequential(
+            nn.Linear(self.flattened_size, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, output_dim)
+        )
+        
+    def forward(self, x):
+        x = self.conv_layers(x)
+        x = x.view(x.size(0), -1)  # Flatten
+        x = self.fc(x)
+        return x
+
+
+class ConditionEncoder(nn.Module):
+    """Encodes the conditioning information (distance, start, end points)"""
+    def __init__(self, input_dim=5, output_dim=64):
+        super(ConditionEncoder, self).__init__()
+        
+        self.encoder = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, output_dim)
+        )
+    
+    def forward(self, x):
+        return self.encoder(x)
+
+
+class RoutePredictor(nn.Module):
+    """LSTM model for predicting the next coordinate based on previous coordinates"""
+    def __init__(self, map_feature_dim=256, condition_dim=64, hidden_dim=256, num_layers=2):
+        super(RoutePredictor, self).__init__()
+        
+        # Coordinate embedder - convert raw (x,y) into a richer representation
+        self.coord_embedder = nn.Sequential(
+            nn.Linear(2, 32),
+            nn.ReLU()
+        )
+        
+        # LSTM for sequence modeling
+        self.lstm = nn.LSTM(
+            input_size=32,  # embedded coordinate dimension
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
+            batch_first=True
+        )
+        
+        # Context integration layer - combines LSTM output with map and condition features
+        self.context_layer = nn.Sequential(
+            nn.Linear(hidden_dim + map_feature_dim + condition_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, 64),
+            nn.ReLU()
+        )
+        
+        # Final coordinate prediction layer
+        self.output_layer = nn.Linear(64, 2)
+    
+    def forward(self, coords, map_features, condition_features, hidden=None):
+        """
+        Forward pass through the route predictor
+        
+        Args:
+            coords: Tensor of shape [batch_size, seq_len, 2] with input coordinates
+            map_features: Tensor of shape [batch_size, map_feature_dim]
+            condition_features: Tensor of shape [batch_size, condition_dim]
+            hidden: Initial hidden state (optional)
+            
+        Returns:
+            next_coords: Predicted next coordinates
+            hidden: Updated hidden state
+        """
+        batch_size, seq_len, _ = coords.shape
+        
+        # Embed coordinates
+        embedded_coords = self.coord_embedder(coords)
+        
+        # Process sequence with LSTM
+        lstm_out, hidden = self.lstm(embedded_coords, hidden)
+        
+        # Expand map and condition features to match sequence length
+        map_features_expanded = map_features.unsqueeze(1).expand(-1, seq_len, -1)
+        condition_features_expanded = condition_features.unsqueeze(1).expand(-1, seq_len, -1)
+        
+        # Combine LSTM output with context
+        combined = torch.cat([lstm_out, map_features_expanded, condition_features_expanded], dim=2)
+        context_integrated = self.context_layer(combined)
+        
+        # Predict next coordinates
+        next_coords = self.output_layer(context_integrated)
+        
+        return next_coords, hidden
+
+
+class ImprovedSequentialRouteGenerator(nn.Module):
+    """Complete model for generating routes sequentially with proper next-coordinate prediction"""
+    def __init__(self, map_feature_dim=256, condition_dim=64, hidden_dim=256, num_layers=2):
+        super(ImprovedSequentialRouteGenerator, self).__init__()
+        
+        self.map_encoder = MapEncoder(output_dim=map_feature_dim)
+        self.condition_encoder = ConditionEncoder(input_dim=5, output_dim=condition_dim)
+        self.route_predictor = RoutePredictor(
+            map_feature_dim=map_feature_dim,
+            condition_dim=condition_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers
+        )
+    
+    def forward(self, map_img, conditions, input_seq):
+        """
+        Forward pass through the model for training
+        
+        Args:
+            map_img: The map image tensor [batch_size, channels, height, width]
+            conditions: Tensor with distance, start and end points [batch_size, 5]
+            input_seq: Input sequence of coordinates [batch_size, seq_len, 2]
+            
+        Returns:
+            predicted_coords: Predicted next coordinates for each input position
+        """
+        # Encode map and conditions
+        map_features = self.map_encoder(map_img)
+        condition_features = self.condition_encoder(conditions)
+        
+        # Predict next coordinates based on input sequence
+        predicted_coords, _ = self.route_predictor(input_seq, map_features, condition_features)
+        
+        return predicted_coords
+    
+    def generate_route(self, map_img, conditions, max_length=500):
+        """
+        Generate a complete route autoregressively
+        
+        Args:
+            map_img: The map image tensor [batch_size, channels, height, width]
+            conditions: Tensor with distance, start and end points [batch_size, 5]
+            max_length: Maximum route length to generate
+            
+        Returns:
+            generated_route: The generated route coordinates
+        """
+        batch_size = map_img.size(0)
+        device = map_img.device
+        
+        # Encode map and conditions (only done once)
+        with torch.no_grad():
+            map_features = self.map_encoder(map_img)
+            condition_features = self.condition_encoder(conditions)
+            
+            # Initialize the route with the start point (from conditions)
+            start_point = conditions[:, 1:3].unsqueeze(1)  # [batch_size, 1, 2]
+            generated_route = [start_point]
+            
+            # Hidden state for LSTM
+            hidden = None
+            
+            # Generate points one by one autoregressively
+            current_seq = start_point
+            
+            for _ in range(max_length - 1):
+                # Predict next coordinate
+                next_coord_pred, hidden = self.route_predictor(
+                    current_seq, map_features, condition_features, hidden
+                )
+                
+                # Get the last predicted coordinate
+                next_coord = next_coord_pred[:, -1:, :]
+                
+                # Add to the generated route
+                generated_route.append(next_coord)
+                
+                # Update current sequence for next iteration
+                # For autoregressive generation, we only use the most recent point
+                current_seq = next_coord
+            
+            # Concatenate all coordinates
+            full_route = torch.cat(generated_route, dim=1)
+            
+        return full_route
+
+
+def create_padded_batch(batch_data):
+    """Create a padded batch for variable-length sequences"""
+    # Get data from batch
+    images = torch.stack([item['image'] for item in batch_data])
+    conditions = torch.stack([item['conditions'] for item in batch_data])
+    
+    # Get sequences and their lengths
+    input_seqs = [item['input_seq'] for item in batch_data]
+    target_seqs = [item['target_seq'] for item in batch_data]
+    seq_lengths = [item['seq_length'] - 1 for item in batch_data]  # -1 because we're predicting next coords
+    
+    # Find max sequence length in this batch
+    max_len = max(seq_lengths)
+    
+    # Pad sequences
+    padded_inputs = []
+    padded_targets = []
+    
+    for inp, tgt in zip(input_seqs, target_seqs):
+        # Pad input sequence
+        padded_inp = torch.zeros((max_len, 2))
+        padded_inp[:len(inp)] = inp
+        padded_inputs.append(padded_inp)
+        
+        # Pad target sequence
+        padded_tgt = torch.zeros((max_len, 2))
+        padded_tgt[:len(tgt)] = tgt
+        padded_targets.append(padded_tgt)
+    
+    # Stack into tensors
+    padded_inputs = torch.stack(padded_inputs)
+    padded_targets = torch.stack(padded_targets)
+    seq_lengths = torch.tensor(seq_lengths)
+    
+    return {
+        'image': images,
+        'conditions': conditions,
+        'input_seq': padded_inputs,
+        'target_seq': padded_targets,
+        'seq_lengths': seq_lengths
+    }
+
+
+def train_improved_model(model, data_loader, num_epochs=100, lr=0.001, 
+                         device='cuda', save_interval=10, save_dir='models',
+                         log_dir='tensorboard_logs'):
+    """
+    Train the improved sequential route generation model with proper next-step prediction
+    and TensorBoard logging for visualization of training metrics
+    """
+    print("Initializing training...")
+    
+    # Import TensorBoard modules
+    from torch.utils.tensorboard import SummaryWriter
+    import numpy as np
+    
+    # Create TensorBoard writer
+    run_id = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_path = os.path.join(log_dir, run_id)
+    writer = SummaryWriter(log_path)
+    print(f"TensorBoard logs will be saved to {log_path}")
+    
+    optimizer = optim.Adam(model.parameters(), lr=lr)
+    
+    # Use MSE loss for coordinate regression
+    criterion = nn.MSELoss()
+    
+    # Create log dictionaries
+    losses = {'train': []}
+    
+    # Ensure save directory exists
+    os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(log_dir, exist_ok=True)
+    
+    print(f"Starting training for {num_epochs} epochs...")
+    start_time = time.time()
+    
+    # Calculate total number of batches
+    total_batches = len(data_loader)
+    
+    # Log model graph to TensorBoard (optional)
+    # Get a sample batch to create the graph
+    sample_batch = next(iter(data_loader))
+    sample_images = sample_batch['image'].to(device)
+    sample_conditions = sample_batch['conditions'].to(device)
+    sample_input_seq = sample_batch['input_seq'].to(device)
+    
+    # Log the model architecture
+    try:
+        writer.add_graph(model, (sample_images, sample_conditions, sample_input_seq))
+    except Exception as e:
+        print(f"Failed to log model graph: {e}")
+    
+    # Global step counter for TensorBoard
+    global_step = 0
+    
+    # Training loop
+    for epoch in range(num_epochs):
+        epoch_start_time = time.time()
+        model.train()
+        
+        # Initialize epoch metrics
+        epoch_loss = 0.0
+        epoch_mse = 0.0
+        epoch_mae = 0.0
+        epoch_distance_error = 0.0
+        
+        # Progress bar for this epoch
+        progress_bar = tqdm(
+            enumerate(data_loader), 
+            total=total_batches,
+            desc=f"Epoch {epoch+1}/{num_epochs}",
+            leave=True
+        )
+        
+        for i, batch in progress_bar:
+            # Move batch data to device
+            images = batch['image'].to(device)
+            conditions = batch['conditions'].to(device)
+            input_seq = batch['input_seq'].to(device)
+            target_seq = batch['target_seq'].to(device)
+            
+            # Forward pass
+            optimizer.zero_grad()
+            predicted_coords = model(images, conditions, input_seq)
+            
+            # Calculate primary loss (MSE)
+            loss = criterion(predicted_coords, target_seq)
+            
+            # Calculate additional metrics for logging
+            with torch.no_grad():
+                # Mean Absolute Error
+                mae = torch.mean(torch.abs(predicted_coords - target_seq))
+                
+                # Euclidean distance error (for each point pair)
+                # Assuming coordinates are in pairs (x,y)
+                pred_reshaped = predicted_coords.view(-1, 2)
+                target_reshaped = target_seq.view(-1, 2)
+                distance_error = torch.sqrt(torch.sum((pred_reshaped - target_reshaped)**2, dim=1)).mean()
+            
+            # Backward pass
+            loss.backward()
+            
+            # Gradient clipping to prevent exploding gradients
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
+            optimizer.step()
+            
+            # Update metrics
+            epoch_loss += loss.item()
+            epoch_mse += loss.item()
+            epoch_mae += mae.item()
+            epoch_distance_error += distance_error.item()
+            
+            # Log batch metrics to TensorBoard
+            writer.add_scalar('Batch/Loss', loss.item(), global_step)
+            writer.add_scalar('Batch/MAE', mae.item(), global_step)
+            writer.add_scalar('Batch/Distance_Error', distance_error.item(), global_step)
+            
+            # Log learning rate
+            current_lr = optimizer.param_groups[0]['lr']
+            writer.add_scalar('Training/Learning_Rate', current_lr, global_step)
+            
+            # Update progress bar
+            progress_bar.set_postfix({
+                'loss': f"{loss.item():.4f}",
+                'dist_err': f"{distance_error.item():.4f}"
+            })
+            
+            global_step += 1
+        
+        # Calculate average epoch metrics
+        avg_epoch_loss = epoch_loss / total_batches
+        avg_epoch_mse = epoch_mse / total_batches
+        avg_epoch_mae = epoch_mae / total_batches
+        avg_epoch_distance_error = epoch_distance_error / total_batches
+        
+        losses['train'].append(avg_epoch_loss)
+        
+        # Log epoch metrics to TensorBoard
+        writer.add_scalar('Epoch/Loss', avg_epoch_loss, epoch)
+        writer.add_scalar('Epoch/MSE', avg_epoch_mse, epoch)
+        writer.add_scalar('Epoch/MAE', avg_epoch_mae, epoch)
+        writer.add_scalar('Epoch/Distance_Error', avg_epoch_distance_error, epoch)
+        
+        # Calculate epoch time
+        epoch_time = time.time() - epoch_start_time
+        
+        # Calculate estimated time remaining
+        avg_epoch_time = (time.time() - start_time) / (epoch + 1)
+        epochs_remaining = num_epochs - (epoch + 1)
+        est_time_remaining = avg_epoch_time * epochs_remaining
+        est_time_str = str(datetime.timedelta(seconds=int(est_time_remaining)))
+        
+        # Print epoch summary
+        print(f"\n{'-'*80}")
+        print(f"Epoch {epoch+1}/{num_epochs} completed in {epoch_time:.2f} seconds")
+        print(f"Average loss: {avg_epoch_loss:.4f}, Distance error: {avg_epoch_distance_error:.4f}")
+        print(f"Estimated time remaining: {est_time_str}")
+        
+        # Save model periodically
+        if epoch % save_interval == 0 or epoch == num_epochs - 1:
+            print(f"Saving model checkpoint for epoch {epoch+1}...")
+            model_path = f"{save_dir}/sequential_model_{epoch}.pt"
+            torch.save(model.state_dict(), model_path)
+            
+            # Add model checkpoint to TensorBoard
+            writer.add_text('Checkpoints', f"Model saved at epoch {epoch+1}: {model_path}", epoch)
+            
+        # Generate sample routes
+        print("Generating sample routes...")
+        model.eval()
+        with torch.no_grad():
+            # Generate routes using a small sample of images from the batch
+            num_samples = min(4, images.size(0))
+            sample_maps = images[:num_samples]
+            sample_conditions = conditions[:num_samples]
+            
+            # Generate routes
+            sample_routes = model.generate_route(sample_maps, sample_conditions)
+            
+            # Visualize and save
+            sample_path = f"{save_dir}/sample_epoch_{epoch}.png"
+            visualize_routes(sample_maps, sample_routes, sample_path)
+            print(f"Sample routes saved to {sample_path}")
+            
+            # Add sample route images to TensorBoard
+            try:
+                sample_img = plt.imread(sample_path)
+                writer.add_image('Generated Routes', sample_img.transpose(2, 0, 1), epoch, dataformats='CHW')
+            except Exception as e:
+                print(f"Failed to log route images to TensorBoard: {e}")
+            
+            # Log route statistics (optional)
+            if sample_routes is not None and len(sample_routes) > 0:
+                route_lengths = [len(route) for route in sample_routes]
+                writer.add_histogram('Route/Length_Distribution', np.array(route_lengths), epoch)
+                writer.add_scalar('Route/Average_Length', np.mean(route_lengths), epoch)
+    
+    # Calculate total training time
+    total_time = time.time() - start_time
+    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+    
+    print(f"{'-'*80}")
+    print(f"Training completed in {total_time_str}")
+    print(f"Final average loss: {avg_epoch_loss:.4f}")
+    print(f"TensorBoard logs saved to {log_path}")
+    
+    # Close TensorBoard writer
+    writer.close()
+    
+    return model, losses
+
+
+def visualize_routes(maps, routes, save_path=None):
+    """
+    Visualize generated routes on maps
+    """
+    fig, axes = plt.subplots(len(routes), 1, figsize=(10, 5 * len(routes)))
+    
+    if len(routes) == 1:
+        axes = [axes]
+    
+    for i, (map_img, route) in enumerate(zip(maps, routes)):
+        # Convert map from tensor to numpy for visualization
+        map_np = map_img.cpu().permute(1, 2, 0).numpy()
+        # Denormalize if necessary (assuming maps are normalized to [-1, 1])
+        map_np = (map_np * 0.5) + 0.5
+        map_np = np.clip(map_np, 0, 1)
+        
+        # Convert route from tensor to numpy of integers
+        route_np = route.cpu().numpy()
+        route_np = route_np.astype(int)
+        
+        # Display the map
+        axes[i].imshow(map_np)
+        
+        # Overlay the route
+        axes[i].plot(route_np[:, 1], route_np[:, 0], 'r-', linewidth=1)
+        
+        # Highlight start and end points
+        axes[i].plot(route_np[0, 1], route_np[0, 0], 'go', markersize=8)  # Start: green
+        axes[i].plot(route_np[-1, 1], route_np[-1, 0], 'bo', markersize=8)  # End: blue
+        
+        axes[i].set_title(f"Generated Route {i+1}")
+        axes[i].axis('off')
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path)
+        plt.close()
+    else:
+        plt.show()
+
+
+def main():
+    # Check device
+    if torch.backends.mps.is_available():
+        device = torch.device("mps")
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+    
+    print(f"Using device: {device}")
+    print(f"{'-'*80}")
+    
+    # Configuration
+    data_path = "data/processed_combined.csv"
+    img_dir1 = "image_data/images0_25000"
+    img_dir2 = "image_data"
+    batch_size = 16
+    num_epochs = 50
+    
+    print(f"Configuration:")
+    print(f"- Data: {data_path}")
+    print(f"- Batch size: {batch_size}")
+    print(f"- Epochs: {num_epochs}")
+    print(f"{'-'*80}")
+    
+    # Image transformations
+    transform = transforms.Compose([
+        transforms.Resize((683, 1366)),
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    ])
+    
+    # Create dataset
+    dataset = RunningRouteDataset(data_path, [img_dir1, img_dir2], transform=transform)
+    
+    print(f"Creating data loader with {len(dataset)} samples")
+    dataloader = DataLoader(
+        dataset, 
+        batch_size=batch_size, 
+        shuffle=True, 
+        num_workers=4,
+        collate_fn=create_padded_batch  # Handle variable-length sequences
+    )
+    
+    # Initialize model
+    model = ImprovedSequentialRouteGenerator().to(device)
+    print("Model created successfully")
+    
+    # Train model
+    print(f"{'-'*80}")
+    trained_model, losses = train_improved_model(
+        model,
+        dataloader, 
+        num_epochs=num_epochs, 
+        device=device,
+        save_dir='models',
+        save_interval=5
+    )
+    
+    # Save final model
+    print("Saving final model...")
+    torch.save(trained_model.state_dict(), "models/sequential_model_final.pt")
+    
+    # Plot losses
+    print("Generating loss plot...")
+    plt.figure(figsize=(10, 5))
+    plt.plot(losses['train'], label='Training Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    
+    loss_plot_path = "models/training_losses.png"
+    plt.savefig(loss_plot_path)
+    print(f"Loss plot saved to {loss_plot_path}")
+    
+    print(f"{'-'*80}")
+    print("Training complete!")
+
+
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path=".gitignore">
+archive/** 
+data/** 
+test_images/** 
+image_data/**
+**/testing.ipynb
+testing.ipynb
+preprocessing.ipynb
+**/__pycache__/
+</file>
+
+<file path="cgan.py">
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader
+import torchvision.transforms as transforms
+from PIL import Image
+import pandas as pd
+import numpy as np
+import os
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+import time
+import datetime
+
+def is_valid_tuple_list(item):
+    if not isinstance(item, list):
+        return False
+    if len(item) != 500:
+        return False
+    for t in item:
+        if not (isinstance(t, tuple) and len(t) == 2):
+            return False
+        if not all(isinstance(x, int) for x in t):
+            return False
+    return True
+    
+class RunningRouteDataset(Dataset):
+    def __init__(self, csv_path, img_dirs, transform=None, verbose=False):
+        """
+        Dataset for running routes and map images
+        
+        Args:
+            csv_path: Path to CSV file with metadata and route information
+            img_dir: Directory containing map images
+            transform: Transforms to apply to images
+            verbose: Whether to print verbose logs during data loading
+        """
+        print(f"Loading dataset from {csv_path}...")
+        self.data = pd.read_csv(csv_path)
+        self.data['route_xy'] = self.data['route_xy'].apply(eval)
+        self.data = self.data.iloc[0:500, :]
+        self.img_dirs = img_dirs
+        self.transform = transform
+        self.verbose = verbose
+        
+        print(f"Processing heart rate data for {len(self.data)} routes...")
+        # Preprocess heart_rate data
+        self.data['avg_heart_rate'] = self.data['heart_rate'].apply(
+            lambda x: np.mean(eval(x)) if isinstance(x, str) else (
+                np.mean(x) if isinstance(x, list) else x
+            )
+        )
+        print("Dataset preparation complete!")
+        
+
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        # Get the row from the dataframe
+        row = self.data.iloc[idx]
+        
+        # Load image
+        if self.verbose:
+            print(f"Loading image for index {idx}")
+        
+        img_id = row['index']
+        
+        if self.verbose:
+            print(f"Image ID: {img_id}")
+        
+        if img_id > 50425:
+            img_path = os.path.join(self.img_dirs[1], f"map{img_id}.png")
+        else:
+            img_path = os.path.join(self.img_dirs[0], f"map{img_id}.png")
+
+        image = Image.open(img_path).convert('RGB')
+        
+        if self.transform:
+            image = self.transform(image)
+        
+        # Get route coordinates
+        route_xy = np.array(eval(row['route_xy'])) if isinstance(row['route_xy'], str) else row['route_xy']
+        route_xy = torch.tensor(route_xy, dtype=torch.float32)
+        
+        # Get conditional parameters
+        distance = torch.tensor([row['distance']], dtype=torch.float32)
+        duration = torch.tensor([row['duration']], dtype=torch.float32)
+        start_end = torch.tensor([row['start_end_dist']], dtype=torch.float32)
+        heart_rate = torch.tensor([row['avg_heart_rate']], dtype=torch.float32)
+        
+        # Combine conditions into one tensor
+        conditions = torch.cat([distance, duration, start_end, heart_rate], dim=0)
+        
+        return {
+            'image': image,
+            'route': route_xy,
+            'conditions': conditions
+        }
+
+class MapImageEncoder(nn.Module):
+    def __init__(self):
+        super(MapImageEncoder, self).__init__()
+        # Input: [B, 3, 1366, 683]
+        self.conv1 = nn.Conv2d(3, 32, kernel_size=4, stride=4)  # [B, 32, 341, 170]
+        self.bn1 = nn.BatchNorm2d(32)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=3)  # [B, 64, 113, 56]
+        self.bn2 = nn.BatchNorm2d(64)
+        self.conv3 = nn.Conv2d(64, 128, kernel_size=2, stride=2)  # [B, 128, 56, 28]
+        self.bn3 = nn.BatchNorm2d(128)
+        self.conv4 = nn.Conv2d(128, 256, kernel_size=2, stride=2)  # [B, 256, 28, 14]
+        self.bn4 = nn.BatchNorm2d(256)
+        self.leaky_relu = nn.LeakyReLU(0.2)
+        
+    def forward(self, x):
+        # Forward pass through the encoder
+        x = self.leaky_relu(self.bn1(self.conv1(x)))
+        x = self.leaky_relu(self.bn2(self.conv2(x)))
+        x = self.leaky_relu(self.bn3(self.conv3(x)))
+        x = self.leaky_relu(self.bn4(self.conv4(x)))
+        return x
+
+
+class Generator(nn.Module):
+    def __init__(self):
+        super(Generator, self).__init__()
+        
+        # Map Image Encoder
+        self.map_encoder = MapImageEncoder()
+        
+        # Process conditional parameters (distance, duration, start_end, heart_rate)
+        self.condition_encoder = nn.Sequential(
+            nn.Linear(4, 64),
+            nn.LeakyReLU(0.2),
+            nn.Linear(64, 128),
+            nn.LeakyReLU(0.2)
+        )
+        
+        # Noise processor
+        self.noise_processor = nn.Sequential(
+            nn.Linear(128, 512),
+            nn.LeakyReLU(0.2),
+            nn.Linear(512, 1024),
+            nn.LeakyReLU(0.2)
+        )
+        
+        # Feature processing and reshaping after combining all inputs
+        self.feature_processor = nn.Sequential(
+            nn.Linear(28 * 14 * 256 + 128 + 1024, 3072),
+            nn.LeakyReLU(0.2),
+            nn.Linear(3072, 2000),
+            nn.LeakyReLU(0.2),
+            nn.Linear(2000, 500 * 2),  # Output 500 x-y coordinates
+            nn.Sigmoid()  # Normalize to [0,1] range
+        )
+        
+        # Final reshaper to scale coordinates to image dimensions
+        self.final_reshape = nn.Linear(500 * 2, 500 * 2)
+        
+    def forward(self, map_img, conditions, noise):
+        # Encode the map image
+        map_features = self.map_encoder(map_img)
+        map_features = map_features.view(map_features.size(0), -1)  # Flatten
+        
+        # Process conditions
+        condition_features = self.condition_encoder(conditions)
+        
+        # Process noise
+        noise_features = self.noise_processor(noise)
+        
+        # Concatenate all features
+        combined_features = torch.cat([map_features, condition_features, noise_features], dim=1)
+        
+        # Process combined features to get route
+        route = self.feature_processor(combined_features)
+        route = route.view(-1, 500, 2)  # Reshape to [batch_size, 500, 2]
+        
+        # Scale to image dimensions
+        route = self.final_reshape(route.view(-1, 500 * 2)).view(-1, 500, 2)
+        
+        return route
+
+
+class RouteEncoder(nn.Module):
+    def __init__(self):
+        super(RouteEncoder, self).__init__()
+        
+        # Reshape to [B, 2, 500]
+        self.conv1d_1 = nn.Conv1d(2, 64, kernel_size=3, padding=1)
+        self.conv1d_2 = nn.Conv1d(64, 128, kernel_size=3, padding=1)
+        self.conv1d_3 = nn.Conv1d(128, 256, kernel_size=3, padding=1)
+        self.conv1d_4 = nn.Conv1d(256, 512, kernel_size=3, padding=1)
+        
+        self.leaky_relu = nn.LeakyReLU(0.2)
+        self.global_avg_pool = nn.AdaptiveAvgPool1d(1)
+        
+    def forward(self, x):
+        # Input shape: [batch_size, 500, 2]
+        x = x.transpose(1, 2)  # Change to [batch_size, 2, 500]
+        
+        x = self.leaky_relu(self.conv1d_1(x))
+        x = self.leaky_relu(self.conv1d_2(x))
+        x = self.leaky_relu(self.conv1d_3(x))
+        x = self.leaky_relu(self.conv1d_4(x))
+        
+        x = self.global_avg_pool(x)  # [batch_size, 512, 1]
+        x = x.view(x.size(0), -1)  # [batch_size, 512]
+        
+        return x
+
+
+class FeatureFusionModule(nn.Module):
+    def __init__(self):
+        super(FeatureFusionModule, self).__init__()
+        
+        # Combine route features (512) and map features (256*29*15)
+        self.route_projection = nn.Linear(512, 512)
+        self.map_projection = nn.Linear(256 * 28 * 14, 256)
+        self.condition_projection = nn.Linear(4, 7)
+        
+        # Feature fusion layers
+        self.fusion_layers = nn.Sequential(
+            nn.Linear(512 + 256 + 7, 1792),
+            nn.LeakyReLU(0.2),
+            nn.Linear(1792, 1024),
+            nn.LeakyReLU(0.2),
+            nn.Linear(1024, 512),
+            nn.LeakyReLU(0.2),
+            nn.Dropout(0.3)
+        )
+        
+    def forward(self, route_features, map_features, conditions):
+        # Process route features
+        route_features = self.route_projection(route_features)
+        
+        # Flatten and process map features
+        map_features = map_features.view(map_features.size(0), -1)
+        map_features = self.map_projection(map_features)
+        
+        # Process conditions
+        condition_features = self.condition_projection(conditions)
+        
+        # Concatenate all features
+        combined = torch.cat([route_features, map_features, condition_features], dim=1)
+        
+        # Process through fusion layers
+        fused_features = self.fusion_layers(combined)
+        
+        return fused_features
+
+
+class Discriminator(nn.Module):
+    def __init__(self):
+        super(Discriminator, self).__init__()
+        
+        # Route encoder
+        self.route_encoder = RouteEncoder()
+        
+        # Map image encoder (shared with Generator)
+        self.map_encoder = MapImageEncoder()
+        
+        # Feature fusion module
+        self.feature_fusion = FeatureFusionModule()
+        
+        # Output heads
+        self.validity_head = nn.Linear(512, 1)
+        self.aux_distance_head = nn.Linear(512, 1)
+        self.aux_duration_head = nn.Linear(512, 1)
+        self.aux_heart_rate_head = nn.Linear(512, 1)
+        
+    def forward(self, route, map_img, conditions):
+        # Encode route
+        route_features = self.route_encoder(route)
+        
+        # Encode map
+        map_features = self.map_encoder(map_img)
+        
+        # Fuse features
+        fused_features = self.feature_fusion(route_features, map_features, conditions)
+        
+        # Get outputs
+        validity = torch.sigmoid(self.validity_head(fused_features))
+        aux_distance = self.aux_distance_head(fused_features)
+        aux_duration = self.aux_duration_head(fused_features)
+        aux_heart_rate = self.aux_heart_rate_head(fused_features)
+        
+        return validity, aux_distance, aux_duration, aux_heart_rate
+
+
+def weights_init(m):
+    """
+    Initialize network weights with a normal distribution
+    """
+    classname = m.__class__.__name__
+    if classname.find('Conv') != -1:
+        nn.init.normal_(m.weight.data, 0.0, 0.02)
+    elif classname.find('BatchNorm') != -1:
+        nn.init.normal_(m.weight.data, 1.0, 0.02)
+        nn.init.constant_(m.bias.data, 0)
+    elif classname.find('Linear') != -1:
+        nn.init.normal_(m.weight.data, 0.0, 0.02)
+        if m.bias is not None:
+            nn.init.constant_(m.bias.data, 0)
+
+def train_cgan(data_loader, num_epochs=100, lr=0.0002, beta1=0.5, beta2=0.999, 
+               device='cuda', save_interval=10, save_dir='models'):
+    """
+    Train the CGAN model with improved progress logging
+    """
+    # Initialize models
+    print("Initializing generator and discriminator models...")
+    generator = Generator().to(device)
+    discriminator = Discriminator().to(device)
+    
+    # Apply weight initialization
+    print("Applying weight initialization...")
+    generator.apply(weights_init)
+    discriminator.apply(weights_init)
+    
+    # Setup optimizers
+    print("Setting up optimizers...")
+    optimizer_G = optim.Adam(generator.parameters(), lr=lr, betas=(beta1, beta2))
+    optimizer_D = optim.Adam(discriminator.parameters(), lr=lr, betas=(beta1, beta2))
+    
+    # Loss functions
+    adversarial_loss = nn.BCELoss()
+    auxiliary_loss = nn.MSELoss()
+    
+    # Create log dictionaries
+    losses = {'G': [], 'D': [], 'aux': []}
+    
+    # Ensure save directory exists
+    os.makedirs(save_dir, exist_ok=True)
+    
+    print(f"Starting training for {num_epochs} epochs...")
+    start_time = time.time()
+    
+    # Calculate total number of batches
+    total_batches = len(data_loader)
+    
+    # Training loop
+    for epoch in range(num_epochs):
+        epoch_start_time = time.time()
+        
+        # Initialize epoch metrics
+        epoch_g_loss = 0.0
+        epoch_d_loss = 0.0
+        epoch_aux_loss = 0.0
+        
+        # Progress bar for this epoch
+        progress_bar = tqdm(
+            enumerate(data_loader), 
+            total=total_batches,
+            desc=f"Epoch {epoch+1}/{num_epochs}",
+            leave=True
+        )
+        
+        for i, batch in progress_bar:
+            # Get batch data
+            real_maps = batch['image'].to(device)
+            real_routes = batch['route'].to(device)
+            conditions = batch['conditions'].to(device)
+            
+            # Configure input
+            batch_size = real_maps.size(0)
+            real_labels = torch.ones(batch_size, 1).to(device)
+            fake_labels = torch.zeros(batch_size, 1).to(device)
+            
+            # Generate noise
+            noise = torch.randn(batch_size, 128).to(device)
+            
+            # -----------------
+            # Train Generator
+            # -----------------
+            optimizer_G.zero_grad()
+            
+            # Generate fake routes
+            gen_routes = generator(real_maps, conditions, noise)
+            
+            # Discriminator evaluates generated routes
+            validity, aux_dist, aux_dur, aux_hr = discriminator(gen_routes, real_maps, conditions)
+            
+            # Calculate generator losses
+            g_loss = adversarial_loss(validity, real_labels)
+            
+            # Auxiliary losses for conditioning
+            aux_d_loss = auxiliary_loss(aux_dist, conditions[:, 0].unsqueeze(1))
+            aux_t_loss = auxiliary_loss(aux_dur, conditions[:, 1].unsqueeze(1))
+            aux_h_loss = auxiliary_loss(aux_hr, conditions[:, 3].unsqueeze(1))
+            
+            # Combined loss with auxiliary losses
+            aux_g_loss = aux_d_loss + aux_t_loss + aux_h_loss
+            g_total_loss = g_loss + aux_g_loss
+            
+            g_total_loss.backward()
+            optimizer_G.step()
+            
+            # -----------------
+            # Train Discriminator
+            # -----------------
+            optimizer_D.zero_grad()
+            
+            # Discriminator evaluates real routes
+            real_validity, real_aux_dist, real_aux_dur, real_aux_hr = discriminator(real_routes, real_maps, conditions)
+            
+            # Discriminator evaluates generated routes (detached to avoid training G again)
+            fake_validity, fake_aux_dist, fake_aux_dur, fake_aux_hr = discriminator(gen_routes.detach(), real_maps, conditions)
+            
+            # Calculate discriminator losses
+            d_real_loss = adversarial_loss(real_validity, real_labels)
+            d_fake_loss = adversarial_loss(fake_validity, fake_labels)
+            d_loss = (d_real_loss + d_fake_loss) / 2
+            
+            # Auxiliary losses for conditioning on real data
+            aux_real_d_loss = auxiliary_loss(real_aux_dist, conditions[:, 0].unsqueeze(1))
+            aux_real_t_loss = auxiliary_loss(real_aux_dur, conditions[:, 1].unsqueeze(1))
+            aux_real_h_loss = auxiliary_loss(real_aux_hr, conditions[:, 3].unsqueeze(1))
+            
+            # Combined auxiliary loss for real data
+            aux_d_real_loss = aux_real_d_loss + aux_real_t_loss + aux_real_h_loss
+            
+            # Total discriminator loss
+            d_total_loss = d_loss + aux_d_real_loss
+            
+            d_total_loss.backward()
+            optimizer_D.step()
+            
+            # Save losses
+            losses['G'].append(g_loss.item())
+            losses['D'].append(d_loss.item())
+            losses['aux'].append(aux_g_loss.item())
+            
+            # Update epoch losses
+            epoch_g_loss += g_loss.item()
+            epoch_d_loss += d_loss.item()
+            epoch_aux_loss += aux_g_loss.item()
+            
+            # Update progress bar with current batch losses
+            progress_bar.set_postfix({
+                'G': f"{g_loss.item():.4f}",
+                'D': f"{d_loss.item():.4f}",
+                'Aux': f"{aux_g_loss.item():.4f}"
+            })
+        
+        # Calculate average epoch losses
+        avg_g_loss = epoch_g_loss / total_batches
+        avg_d_loss = epoch_d_loss / total_batches
+        avg_aux_loss = epoch_aux_loss / total_batches
+        
+        # Calculate epoch time
+        epoch_time = time.time() - epoch_start_time
+        
+        # Calculate estimated time remaining
+        avg_epoch_time = (time.time() - start_time) / (epoch + 1)
+        epochs_remaining = num_epochs - (epoch + 1)
+        est_time_remaining = avg_epoch_time * epochs_remaining
+        est_time_str = str(datetime.timedelta(seconds=int(est_time_remaining)))
+        
+        # Print epoch summary
+        print(f"\n{'-'*80}")
+        print(f"Epoch {epoch+1}/{num_epochs} completed in {epoch_time:.2f} seconds")
+        print(f"Avg losses - Generator: {avg_g_loss:.4f}, Discriminator: {avg_d_loss:.4f}, Auxiliary: {avg_aux_loss:.4f}")
+        print(f"Estimated time remaining: {est_time_str} (completion around {datetime.datetime.now() + datetime.timedelta(seconds=est_time_remaining):%Y-%m-%d %H:%M:%S})")
+        
+        # Save models periodically
+        if epoch % save_interval == 0 or epoch == num_epochs - 1:
+            print(f"Saving model checkpoints for epoch {epoch+1}...")
+            torch.save(generator.state_dict(), f"{save_dir}/generator_{epoch}.pt")
+            torch.save(discriminator.state_dict(), f"{save_dir}/discriminator_{epoch}.pt")
+            
+            # Save a sample of generated routes
+            print("Generating sample routes...")
+            with torch.no_grad():
+                num_examples = min(4, batch_size)
+                sample_maps = real_maps[:num_examples]  # Take first 4 maps from last batch
+                sample_conditions = conditions[:num_examples]
+                sample_noise = torch.randn(num_examples, 128).to(device)
+                sample_routes = generator(sample_maps, sample_conditions, sample_noise)
+                
+                # Visualize and save sample routes
+                sample_path = f"{save_dir}/sample_epoch_{epoch}.png"
+                visualize_routes(sample_maps, sample_routes, sample_path)
+                print(f"Sample routes saved to {sample_path}")
+    
+    # Calculate total training time
+    total_time = time.time() - start_time
+    total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+    
+    print(f"{'-'*80}")
+    print(f"Training completed in {total_time_str}")
+    print(f"Final losses - Generator: {avg_g_loss:.4f}, Discriminator: {avg_d_loss:.4f}, Auxiliary: {avg_aux_loss:.4f}")
+    
+    return generator, discriminator, losses
+
+
+def visualize_routes(maps, routes, save_path=None):
+    """
+    Visualize generated routes on maps
+    """
+    fig, axes = plt.subplots(len(routes), 1, figsize=(10, 5 * len(routes)))
+    
+    if len(routes) == 1:
+        axes = [axes]
+    
+    for i, (map_img, route) in enumerate(zip(maps, routes)):
+        # Convert map from tensor to numpy for visualization
+        # map_np = map_img.cpu().permute(1, 2, 0).numpy()
+        # map_np = (map_np * 0.5) + 0.5  # Unnormalize if using normalization
+
+        map_np = map_img.cpu().permute(1, 2, 0).numpy()
+        print(map_np.shape)
+        
+        # Convert route from tensor to numpy
+        route_np = route.cpu().numpy()
+        
+        # Display the map
+        axes[i].imshow(map_np)
+        
+        # Overlay the route
+        # axes[i].plot(route_np[:, 0] * map_np.shape[1], route_np[:, 1] * map_np.shape[0], 'r-', linewidth=2)
+        axes[i].plot(route_np[:, 1]* map_np.shape[0], route_np[:, 0] * map_np.shape[1], 'r-', linewidth=1)
+        
+        axes[i].set_title(f"Generated Route {i+1}")
+        axes[i].axis('off')
+    
+    plt.tight_layout()
+    
+    if save_path:
+        plt.savefig(save_path)
+        plt.close()
+    else:
+        plt.show()
+
+
+def main():
+    # Check if GPU is available, else MPS, else CPU
+    if torch.backends.mps.is_available():
+        device = torch.device("mps")
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+    
+    print(f"Using device: {device}")
+    print(f"{'-'*80}")
+    
+    # Configuration
+    data_path = "data/processed_combined.csv"
+    img_dir1 = "image_data/images0_25000"
+    img_dir2 = "image_data"
+    batch_size = 16
+    num_epochs = 100
+    
+    print(f"Configuration:")
+    print(f"- Data: {data_path}")
+    # print(f"- Images: {img_dir}")
+    print(f"- Batch size: {batch_size}")
+    print(f"- Epochs: {num_epochs}")
+    print(f"{'-'*80}")
+    
+    # Image transformations
+    transform = transforms.Compose([
+        transforms.Resize((683, 1366)),
+        transforms.ToTensor(),
+        transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+    ])
+    
+    # Create dataset and dataloader
+    dataset = RunningRouteDataset(data_path, [img_dir1, img_dir2], transform=transform, verbose=False)
+    
+    print(f"Creating data loader with {len(dataset)} samples")
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
+    
+    # Train the model
+    print(f"{'-'*80}")
+    generator, discriminator, losses = train_cgan(
+        dataloader, 
+        num_epochs=num_epochs, 
+        device=device,
+        save_dir='models'
+    )
+    
+    # Save final models
+    print("Saving final models...")
+    torch.save(generator.state_dict(), "models/generator_final.pt")
+    torch.save(discriminator.state_dict(), "models/discriminator_final.pt")
+    
+    # Plot losses
+    print("Generating loss plot...")
+    plt.figure(figsize=(10, 5))
+    plt.plot(losses['G'], label='Generator Loss')
+    plt.plot(losses['D'], label='Discriminator Loss')
+    plt.plot(losses['aux'], label='Auxiliary Loss')
+    plt.xlabel('Iterations')
+    plt.ylabel('Loss')
+    plt.legend()
+    
+    loss_plot_path = "models/training_losses.png"
+    plt.savefig(loss_plot_path)
+    print(f"Loss plot saved to {loss_plot_path}")
+    
+    print(f"{'-'*80}")
+    print("Training complete!")
+
+
+if __name__ == "__main__":
+    main()
+</file>
+
+<file path="utils/preprocessing.py">
+import folium
+import time
+from PIL import Image, ImageDraw
+import io
+import numpy as np
+from tqdm import tqdm
+import multiprocessing as mp
+import os
+import gc
+from folium.utilities import temp_html_filepath
+
+def to_png(map, delay=3):
+    """Export the HTML to byte representation of a PNG image.
+
+    Uses selenium to render the HTML and record a PNG. You may need to
+    adjust the `delay` time keyword argument if maps render without data or tiles.
+
+    Examples
+    --------
+    >>> m._to_png()
+    >>> m._to_png(time=10)  # Wait 10 seconds between render and snapshot.
+
+    """
+    if map._png_image is None:
+        from selenium import webdriver
+
+        options = webdriver.firefox.options.Options()
+        options.add_argument('--headless')
+        driver = webdriver.Firefox(options=options)
+
+
+        try:
+            html = map.get_root().render()
+            with temp_html_filepath(html) as fname:
+                # We need the tempfile to avoid JS security issues.
+                driver.get('file:///{path}'.format(path=fname))
+                driver.maximize_window()
+                time.sleep(delay)
+                png = driver.get_screenshot_as_png()
+                map._png_image = png
+        finally:
+            driver.quit()
+    return map._png_image
+
+
+
+def plot_route(latitude, longitude, map_filename="route_map.html", image_filename="route_map.png", plt_route=False, download_image=False):
+    """
+    Plots a route using latitude and longitude lists on an OpenStreetMap-based interactive map.
+    Uses fit_bounds to ensure the entire route is visible and captures an image of the map.
+    Places bright colored markers at the corners to accurately determine bounds in the image.
+
+    Args:
+        latitude (list): List of latitude coordinates.
+        longitude (list): List of longitude coordinates.
+        map_filename (str): Output filename for the HTML map.
+        image_filename (str): Output filename for the map image.
+        plt_route (bool): Whether to plot the route line and markers.
+        download_image (bool): Whether to save the map as an image.
+
+    Returns:
+        tuple: (folium.Map, numpy.ndarray) The generated interactive map and the bounds as a numpy array.
+    """
+    if not latitude or not longitude or len(latitude) != len(longitude):
+        raise ValueError("Latitude and longitude lists must be non-empty and of the same length.")
+
+    # Create a Folium map centered at the first location
+    route_map = folium.Map(location=[latitude[0], longitude[0]], zoom_start=14, tiles="OpenStreetMap", png_enabled = True)
+
+    # Calculate the bounds with padding
+    min_lat = min(latitude)
+    max_lat = max(latitude)
+    min_lon = min(longitude)
+    max_lon = max(longitude)
+    
+    # Add a small padding to the bounds (around 5%)
+    lat_padding = (max_lat - min_lat) * 0.1
+    lon_padding = (max_lon - min_lon) * 0.1
+    
+    # Create bounds with padding
+    sw = [min_lat - lat_padding, min_lon - lon_padding]
+    ne = [max_lat + lat_padding, max_lon + lon_padding]
+    
+    # Apply bounds immediately after creating the map
+    route_map.fit_bounds([sw, ne])
+    
+    # Store bounds as numpy array
+    bounds_array = np.array([sw, ne])
+
+    # Add route to the map
+    route = list(zip(latitude, longitude))
+
+    if plt_route:
+        folium.PolyLine(route, color="blue", weight=5, opacity=0.7).add_to(route_map)
+
+        # Add start and end markers
+        folium.Marker(route[0], popup="Start", icon=folium.Icon(color="green")).add_to(route_map)
+        folium.Marker(route[-1], popup="End", icon=folium.Icon(color="red")).add_to(route_map)
+    
+    # Add corner markers with distinct bright colors for later detection
+    # Bottom-left (southwest)
+    folium.CircleMarker(
+        location=sw,
+        radius=.5,
+        fill=True,
+        fill_color="#FF00FF",  # Magenta
+        color="#FF00FF",
+        fill_opacity=1.0,
+        popup="SW"
+    ).add_to(route_map)
+    
+    # Top-left (northwest)
+    folium.CircleMarker(
+        location=[ne[0], sw[1]],
+        radius=.5,
+        fill=True,
+        fill_color="#00FFFF",  # Cyan
+        color="#00FFFF",
+        fill_opacity=1.0,
+        popup="NW"
+    ).add_to(route_map)
+    
+    # Bottom-right (southeast)
+    folium.CircleMarker(
+        location=[sw[0], ne[1]],
+        radius=.5,
+        fill=True,
+        fill_color="#FFFF00",  # Yellow
+        color="#FFFF00",
+        fill_opacity=1.0,
+        popup="SE"
+    ).add_to(route_map)
+    
+    # Top-right (northeast)
+    folium.CircleMarker(
+        location=ne,
+        radius=.5,
+        fill=True,
+        fill_color="#FF0000",  # Red
+        color="#FF0000",
+        fill_opacity=1.0,
+        popup="NE"
+    ).add_to(route_map)
+
+    # Capture the map as an image
+
+
+    img_data = to_png(route_map, 5)
+
+    # Convert the byte data to a PIL image
+    img = Image.open(io.BytesIO(img_data))
+
+    if download_image:
+        
+        # Save the image image
+        img.save(image_filename)
+
+    return img, bounds_array
+
+def find_color_locations(image, target_color):
+    # Create a boolean mask where True indicates matching pixels
+    mask = np.all(image == target_color, axis=2)
+    
+    # Get the coordinates of True values in the mask
+    locations = np.where(mask)
+    
+    # Return as list of (x, y) tuples
+    return list(zip(locations[0], locations[1]))
+
+
+def find_markers(img):
+    """
+    Find the colored corner markers in the image and return their center coordinates.
+    
+    Args:
+        img (PIL.Image): The original map image.
+        
+    Returns:
+        dict: Dictionary of marker centers and original image.
+    """
+    # Convert to RGB if image is RGBA
+    if img.mode == 'RGBA':
+        img = img.convert('RGB')
+    
+    # Get image as numpy array
+    img_array = np.array(img)
+    
+    # Define the colors to look for (RGB)
+    colors = {
+        "magenta": (255, 0, 255),  # SW
+        "cyan": (0, 255, 255),     # NW
+        "yellow": (255, 255, 0),   # SE
+        "red": (255, 0, 0)         # NE
+    }
+    
+    # Dictionary to store the center points of each marker
+    marker_centers = {}
+    
+    # Find each marker
+    for color_name, color_rgb in colors.items():
+        locs = find_color_locations(img_array, color_rgb)
+
+        # Calculate the center of the marker
+        if locs:
+            x_coords, y_coords = zip(*locs)
+            center = (sum(x_coords) // len(x_coords), sum(y_coords) // len(y_coords))
+            marker_centers[color_name] = center
+        else:
+            print(f"Warning: Marker {color_name} not found.")
+
+    # Attempt to infer missing marker positions
+    def get(name):
+        return marker_centers.get(name)
+
+    # Fill missing SW (magenta)
+    if "magenta" not in marker_centers and get("cyan") and get("yellow"):
+        marker_centers["magenta"] = (get("cyan")[0], get("yellow")[1])
+
+    # Fill missing NW (cyan)
+    if "cyan" not in marker_centers and get("magenta") and get("red"):
+        marker_centers["cyan"] = (get("magenta")[0], get("red")[1])
+
+    # Fill missing SE (yellow)
+    if "yellow" not in marker_centers and get("red") and get("magenta"):
+        marker_centers["yellow"] = (get("red")[0], get("magenta")[1])
+
+    # Fill missing NE (red)
+    if "red" not in marker_centers and get("yellow") and get("cyan"):
+        marker_centers["red"] = (get("yellow")[0], get("cyan")[1])
+
+    # Final warning if still incomplete
+    if len(marker_centers) != 4:
+        print(f"Warning: Could not recover all markers. Found {len(marker_centers)} out of 4.")
+
+    return {
+        "markers": marker_centers,
+        "image": img,
+        "image_size": img.size  # Store the original image size
+    }
+
+
+def latlon_to_xy(lat, lon, map_data, geo_bounds):
+    """
+    Convert latitude/longitude to x,y coordinates on the original image.
+    
+    Args:
+        lat (float): Latitude coordinate.
+        lon (float): Longitude coordinate.
+        map_data (dict): Dictionary containing marker centers and image size.
+        geo_bounds (dict): Dictionary with geographic bounds keyed by marker colors.
+        
+    Returns:
+        tuple: (x, y) coordinates on the original image.
+    """
+    markers = map_data["markers"]
+    
+    # Check if we have all required markers
+    required_markers = ["magenta", "cyan", "yellow", "red"]
+    if not all(marker in markers for marker in required_markers):
+        return None
+    
+    # Get geographic bounds
+    min_lat, min_lon = geo_bounds[0]
+    max_lat, max_lon = geo_bounds[1]
+    
+    # Calculate relative position in geographic space (0 to 1)
+    rel_x = (lon - min_lon) / (max_lon - min_lon)
+    rel_y = 1 - (lat - min_lat) / (max_lat - min_lat)  # Invert Y (image coordinates increase downward)
+    
+    # Get marker positions
+    sw_pos = markers["magenta"]
+    nw_pos = markers["cyan"]
+    se_pos = markers["yellow"]
+    ne_pos = markers["red"]
+    
+    # Apply bilinear interpolation
+    # First interpolate along top and bottom edge
+    top_x = nw_pos[0] + rel_x * (ne_pos[0] - nw_pos[0])
+    bottom_x = sw_pos[0] + rel_x * (se_pos[0] - sw_pos[0])
+    
+    # Then interpolate between top and bottom
+    x = int(top_x + rel_y * (bottom_x - top_x))
+    
+    # Similarly for y-coordinate
+    left_y = nw_pos[1] + rel_y * (sw_pos[1] - nw_pos[1])
+    right_y = ne_pos[1] + rel_y * (se_pos[1] - ne_pos[1])
+    
+    y = int(left_y + rel_x * (right_y - left_y))
+    
+    return (x, y)
+
+
+import math
+def haversine_distance(lat1, lon1, lat2, lon2):
+    # calculate distance between 2 points on Earth
+
+    lat1_rad = math.radians(lat1)
+    lon1_rad = math.radians(lon1)
+    lat2_rad = math.radians(lat2)
+    lon2_rad = math.radians(lon2)
+    
+    # Haversine formula
+    dlat = lat2_rad - lat1_rad
+    dlon = lon2_rad - lon1_rad
+    
+    a = math.sin(dlat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon/2)**2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1-a))
+    
+    # Earth's radius in miles
+    radius = 3958.8  # miles (6371 km)
+    
+    # Calculate distance
+    distance = radius * c
+    
+    return distance
+
+def get_route_distance(latitudes, longitudes):
+    total_distance = 0
+    # Calculate distance between consecutive points
+    for i in range(len(latitudes) - 1):
+        distance = haversine_distance(
+            latitudes[i], longitudes[i],
+            latitudes[i+1], longitudes[i+1]
+        )
+        total_distance += distance
+        
+    return total_distance
+
+
+def calculate_route_duration(timestamps):
+        
+    # Calculate duration in seconds
+    start_time = timestamps[0]
+    end_time = timestamps[-1]
+    duration_seconds = end_time - start_time
+    
+    # Convert to minutes
+    duration_minutes = duration_seconds / 60
+    
+    return duration_minutes
+
+def get_start_end_dist(latitudes, longitudes):
+    # Calculate distance between consecutive points
+    start_lat = latitudes[0]
+    start_lon = longitudes[0]
+    end_lat = latitudes[-1]
+    end_lon = longitudes[-1]
+    
+    distance = haversine_distance(start_lat, start_lon, end_lat, end_lon)
+    
+    return distance
+
+def preprocess_route(row_tuple):
+    idx, row = row_tuple
+    
+    latitude = row['latitude']
+    longitude = row['longitude']
+
+    # Use idx for the filename
+    route_map, bounds = plot_route(latitude, longitude, plt_route=False, download_image=True, 
+                                 image_filename=f"image_data/map{idx}.png")  
+
+
+    map_data = find_markers(route_map)
+
+
+    # Get the cropped image size
+    image_dims = (route_map.width, route_map.height)
+
+    route_xy = []
+    for lat, lon in zip(latitude, longitude):
+        xy = latlon_to_xy(lat, lon, map_data, bounds)
+        route_xy.append(xy)
+
+    del route_map, map_data
+    gc.collect()
+
+    return bounds, route_xy, image_dims
+
+def parallel_process(df, num_processes=None):
+    # If num_processes is None, use all available cores
+    if num_processes is None:
+        num_processes = mp.cpu_count()
+    
+    # Convert DataFrame to list of (idx, row) tuples
+    row_tuples = list(df.iterrows())
+
+    folder_name = "image_data"
+
+    # Check if the folder already exists
+    if not os.path.exists(folder_name):
+        # Create the folder
+        os.makedirs(folder_name)
+    
+    # Create a pool of workers with 'spawn' context for better compatibility
+    ctx = mp.get_context('spawn')
+    with ctx.Pool(processes=num_processes) as pool:
+        # Process rows in parallel with progress bar
+        results = []
+        for result in tqdm(pool.imap(preprocess_route, row_tuples), total=len(df)):
+            results.append(result)
+            del result  # Free memory
+            gc.collect()
+        
+    
+    # Unpack results
+    bounds_list, route_xy_list, image_dims_list = zip(*results)
+    
+    # Assign results back to the DataFrame
+    df['bounds'] = bounds_list
+    df['route_xy'] = route_xy_list
+    df['image_dims'] = image_dims_list
+    
+    return df
+
+
+def draw_test_preprocess(df, idx):
+
+    row_tuple = list(df.iterrows())[idx]
+
+    idx, row = row_tuple
+    
+    latitude = row['latitude']
+    longitude = row['longitude']
+
+    # Use idx for the filename
+    route_map, bounds = plot_route(latitude, longitude, plt_route=True, download_image=False, 
+                                 image_filename=f"image_data/map{idx}.png")  
+
+
+    map_data = find_markers(route_map)
+
+
+    route_xy = []
+    for lat, lon in zip(latitude, longitude):
+        xy = latlon_to_xy(lat, lon, map_data, bounds)
+        route_xy.append(xy)
+
+
+    draw_img = route_map.copy()
+    draw = ImageDraw.Draw(draw_img)
+
+    # Draw the route points on the image
+    for x, y in route_xy:
+        draw.ellipse((y-1, x-1, y+1, x+1), fill="purple", outline="white")
+
+
+    draw_img.show()
+</file>
+
+</files>

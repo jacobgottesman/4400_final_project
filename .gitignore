@@ -5,3 +5,4 @@ image_data/**
 **/testing.ipynb
 testing.ipynb
 preprocessing.ipynb
+**/__pycache__/
