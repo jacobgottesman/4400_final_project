@@ -417,6 +417,7 @@ class RunningRouteDataset(Dataset):
     def __init__(self, csv_path, img_dirs, transform=None, verbose=False):
         print(f"Loading dataset from {csv_path}...")
         self.data = pd.read_csv(csv_path)
+        self.data = self.data.iloc[0:1000, :]
         self.data['route_xy'] = self.data['route_xy'].apply(eval)
         self.img_dirs = img_dirs
         self.transform = transform
@@ -714,11 +715,11 @@ def visualize_routes(maps, routes, save_path=None):
         axes[i].imshow(map_np)
         
         # Overlay the route
-        axes[i].plot(route_scaled[:, 0], route_scaled[:, 1], 'r-', linewidth=2)
+        axes[i].plot(route_scaled[:, 1], route_scaled[:, 0], 'r-', linewidth=2)
         
         # Highlight start and end points
-        axes[i].plot(route_scaled[0, 0], route_scaled[0, 1], 'go', markersize=8)  # Start: green
-        axes[i].plot(route_scaled[-1, 0], route_scaled[-1, 1], 'bo', markersize=8)  # End: blue
+        axes[i].plot(route_scaled[0, 1], route_scaled[0, 0], 'go', markersize=8)  # Start: green
+        axes[i].plot(route_scaled[-1, 1], route_scaled[-1, 0], 'bo', markersize=8)  # End: blue
         
         axes[i].set_title(f"Generated Route {i+1}")
         axes[i].axis('off')
@@ -822,3 +823,6 @@ def main():
     
     print(f"{'-'*80}")
     print("Training complete!")
+
+if __name__ == "__main__":
+    main()
