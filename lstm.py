@@ -11,6 +11,10 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import time
 import datetime
+import torch.multiprocessing as mp
+from functools import partial
+import numpy as np
+import concurrent.futures
 
 class RunningRouteDataset(Dataset):
     def __init__(self, csv_path, img_dirs, transform=None, verbose=False, local_map_size=128):
@@ -264,75 +268,64 @@ class LocalMapAwareRouteGenerator(nn.Module):
             hidden_dim=hidden_dim,
             num_layers=num_layers
         )
+
+
     def get_local_map_crops(self, full_map, coords, map_size):
         """
-        Extract local map crops around each coordinate
-        
-        Args:
-            full_map: Full map image tensor [batch_size, channels, height, width]
-            coords: Coordinates tensor [batch_size, seq_len, 2]
-            map_size: Size of the local map crop (square)
-            
-        Returns:
-            local_maps: Tensor of local map crops [batch_size, seq_len, channels, crop_h, crop_w]
+        Extract local map crops with optimized NumPy operations
         """
-    
-        batch_size, seq_len, _ = coords.shape
-        channels = full_map.shape[1]
-        device = full_map.device
+        import numpy as np
+        
+        # Move tensors to CPU and convert to numpy
+        full_map_np = full_map.cpu().numpy()
+        coords_np = coords.cpu().numpy()
+        
+        batch_size, seq_len, _ = coords_np.shape
+        channels = full_map_np.shape[1]
+        h, w = full_map_np.shape[2:4]
         half_size = map_size // 2
         
-        # Initialize output tensor
-        local_maps = torch.zeros(
-            (batch_size, seq_len, channels, map_size, map_size), 
-            device=device
-        )
+        # Pre-allocate output array
+        result_np = np.zeros((batch_size, seq_len, channels, map_size, map_size), dtype=full_map_np.dtype)
         
-        # Create grid sampling coordinates for all crops at once
-        coords_norm = coords.float()  # [batch_size, seq_len, 2]
-        
-        # Create normalized grid coordinates for each crop
-        y_indices = torch.arange(-half_size, half_size, device=device).float()
-        x_indices = torch.arange(-half_size, half_size, device=device).float()
-        
-        # Normalize to [-1, 1] for grid_sample
-        h, w = full_map.shape[2:4]
-        y_grid = (y_indices / (h - 1) * 2)
-        x_grid = (x_indices / (w - 1) * 2)
-        
-        # Create sampling grid for all positions
-        grid_y, grid_x = torch.meshgrid(y_grid, x_grid, indexing='ij')
-        base_grid = torch.stack([grid_x, grid_y], dim=-1)  # [map_size, map_size, 2]
-        
-        # Process batches to avoid excessive memory usage
+        # Process batches sequentially, but use vectorized operations within batch
         for batch_idx in range(batch_size):
-            # Normalize coordinates to [-1, 1] range for grid_sample
-            y_norm = coords_norm[batch_idx, :, 0] / (h - 1) * 2 - 1
-            x_norm = coords_norm[batch_idx, :, 1] / (w - 1) * 2 - 1
+            y_coords = coords_np[batch_idx, :, 0].astype(np.int32)
+            x_coords = coords_np[batch_idx, :, 1].astype(np.int32)
             
-            # For each sequence position, create a grid centered at that coordinate
+            # Calculate all boundaries at once
+            y_min = np.maximum(0, y_coords - half_size)
+            x_min = np.maximum(0, x_coords - half_size)
+            y_max = np.minimum(h, y_coords + half_size)
+            x_max = np.minimum(w, x_coords + half_size)
+            
+            # Get each crop and apply padding if needed
             for seq_idx in range(seq_len):
-                # Offset the base grid by the normalized coordinate
-                grid = base_grid.clone()
-                grid[..., 0] = grid[..., 0] + x_norm[seq_idx]
-                grid[..., 1] = grid[..., 1] + y_norm[seq_idx]
+                # Extract crop
+                crop = full_map_np[batch_idx, :, y_min[seq_idx]:y_max[seq_idx], x_min[seq_idx]:x_max[seq_idx]]
                 
-                # Ensure grid values are within [-1, 1]
-                grid = torch.clamp(grid, -1, 1)
+                # Calculate padding if needed
+                pad_top = max(0, half_size - y_coords[seq_idx])
+                pad_left = max(0, half_size - x_coords[seq_idx])
+                pad_bottom = max(0, y_coords[seq_idx] + half_size - h)
+                pad_right = max(0, x_coords[seq_idx] + half_size - w)
                 
-                # Use grid_sample to extract the crop (handles out-of-bounds with padding)
-                crop = torch.nn.functional.grid_sample(
-                    full_map[batch_idx:batch_idx+1],
-                    grid.unsqueeze(0),
-                    mode='bilinear',
-                    padding_mode='zeros',
-                    align_corners=True
-                )
+                # Apply padding if needed
+                if pad_top > 0 or pad_left > 0 or pad_bottom > 0 or pad_right > 0:
+                    padded_crop = np.zeros((channels, map_size, map_size), dtype=crop.dtype)
+                    crop_h, crop_w = crop.shape[1:3]
+                    padded_crop[:, pad_top:pad_top+crop_h, pad_left:pad_left+crop_w] = crop
+                    crop = padded_crop
                 
-                local_maps[batch_idx, seq_idx] = crop.squeeze(0)
+                # Store in result array
+                result_np[batch_idx, seq_idx] = crop
         
-        return local_maps
-    
+        # Convert result back to PyTorch tensor and move to original device
+        result_tensor = torch.from_numpy(result_np).to(full_map.device)
+        
+        return result_tensor
+
+   
     def forward(self, full_map, conditions, input_seq, steps_remaining):
         """
         Forward pass through the model for training
@@ -524,7 +517,7 @@ def create_padded_batch(batch_data):
 
 
 def train_local_map_model(model, data_loader, num_epochs=100, lr=0.001, 
-                         device='cuda', save_interval=10, save_dir='models',
+                         device='cuda', save_interval=10, save_dir='models/lstm',
                          log_dir='tensorboard_logs'):
     """
     Train the local map aware route generation model with step-remaining tracking
@@ -1118,7 +1111,7 @@ def main():
         dataloader, 
         num_epochs=num_epochs, 
         device=device,
-        save_dir='models',
+        save_dir='models/lstm',
         save_interval=5
     )
 
