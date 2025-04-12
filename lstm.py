@@ -588,14 +588,26 @@ def custom_loss_function(predicted_coords, target_coords, conditions, steps_rema
     color_diff = sampled_rgb[:, 1:] - sampled_rgb[:, :-1]
     color_change_loss = torch.norm(color_diff.float(), dim=2).mean()
 
-    # Final total loss
+    # Step size consistency penalty
+    step_deltas = predicted_coords[:, 1:] - predicted_coords[:, :-1]  # (B, T-1, 2)
+    step_lengths = torch.norm(step_deltas, dim=2)  # (B, T-1)
+
+    avg_step_length = step_lengths.mean(dim=1, keepdim=True)  # (B, 1)
+    # Penalize if any step exceeds 5× the average
+    excessive_steps = torch.relu(step_lengths - 5 * avg_step_length)  # (B, T-1)
+    step_consistency_loss = excessive_steps.mean()
+
+    step_consistency_weight = 0.05  # Tune this if needed
+
     total_loss = (
         mse_loss
         + distance_weight * distance_loss
         + pace_weight * pace_loss
         + water_weight * water_loss
         + color_change_weight * color_change_loss
+        + step_consistency_weight * step_consistency_loss
     )
+
 
     return total_loss
 
@@ -1211,7 +1223,7 @@ def main():
         dataloader, 
         num_epochs=num_epochs, 
         device=device,
-        save_dir='models/lstm',
+        save_dir='models/lstm_custom_loss',
         save_interval=5
     )
 
