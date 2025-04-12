@@ -16,6 +16,12 @@ from functools import partial
 import numpy as np
 import concurrent.futures
 
+def total_route_distance(coords):
+    coords = np.array(coords)
+    diffs = np.diff(coords, axis=0)
+    distances = np.linalg.norm(diffs, axis=1)
+    return np.sum(distances)
+
 class RunningRouteDataset(Dataset):
     def __init__(self, csv_path, img_dirs, transform=None, verbose=False, local_map_size=128):
         """
@@ -76,8 +82,7 @@ class RunningRouteDataset(Dataset):
         route_tensor = torch.tensor(route_xy, dtype=torch.float32)
         
         # Get conditional parameters
-        distance = torch.tensor([row['distance']], dtype=torch.float32)
-        
+        distance = torch.tensor([total_route_distance(route_xy)], dtype=torch.float32)
         # Extract start and end points
         start_point = torch.tensor(route_xy[0], dtype=torch.float32)
         end_point = torch.tensor(route_xy[-1], dtype=torch.float32)
@@ -515,9 +520,89 @@ def create_padded_batch(batch_data):
         'seq_lengths': seq_lengths
     }
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+def custom_loss_function(predicted_coords, target_coords, conditions, steps_remaining, full_images,
+                         distance_weight=0.1, pace_weight=0.1, water_weight=1.0, color_change_weight=0.01):
+    """
+    Custom loss function for route prediction.
+    """
+    batch_size, seq_len, _ = predicted_coords.shape
+    _, _, H, W = full_images.shape
+
+    # 1. Coordinate MSE loss
+    mse_loss = nn.MSELoss()(predicted_coords, target_coords)
+
+    # 2. Distance consistency loss
+    step_deltas = predicted_coords[:, 1:] - predicted_coords[:, :-1]
+    step_lengths = torch.norm(step_deltas, dim=2)
+    pred_distance = step_lengths.sum(dim=1)
+    target_distance = conditions[:, 0]
+    distance_loss = nn.MSELoss()(pred_distance, target_distance)
+
+    # 3. On-pace penalty
+    end_points = conditions[:, 3:5].unsqueeze(1)
+    dist_to_goal = torch.norm(predicted_coords - end_points, dim=2)
+    step_lengths_with_0 = torch.cat(
+        [torch.zeros(batch_size, 1, device=predicted_coords.device), step_lengths], dim=1
+    )
+    cumulative_dist = torch.cumsum(step_lengths_with_0, dim=1)
+    steps_so_far = torch.arange(1, seq_len + 1, device=predicted_coords.device).float()
+    avg_step_size = cumulative_dist / steps_so_far.unsqueeze(0)
+    steps_left = steps_remaining.unsqueeze(1).float()
+    max_possible_remaining = avg_step_size * steps_left
+    pace_miss_penalty = torch.relu(dist_to_goal - max_possible_remaining)
+    pace_loss = pace_miss_penalty.mean()
+
+    # 4. Water penalty
+    # Normalize coordinates to pixel grid
+    coords_px = predicted_coords.round().long().clamp(min=0)
+    coords_px[..., 0] = coords_px[..., 0].clamp(max=W - 1)
+    coords_px[..., 1] = coords_px[..., 1].clamp(max=H - 1)
+
+    # Sample RGB from map
+    sampled_rgb = []
+    for i in range(batch_size):
+        r = full_images[i, 0, coords_px[i,:,1], coords_px[i,:,0]]  # R
+        g = full_images[i, 1, coords_px[i,:,1], coords_px[i,:,0]]  # G
+        b = full_images[i, 2, coords_px[i,:,1], coords_px[i,:,0]]  # B
+        sampled_rgb.append(torch.stack([r, g, b], dim=-1))  # (T, 3)
+    sampled_rgb = torch.stack(sampled_rgb)  # (B, T, 3)
+
+    # Standard water color from OSM
+    water_rgb = torch.tensor([171, 211, 223], device=predicted_coords.device).float()
+
+    # Compute L2 distance from water color
+    diff_from_water = sampled_rgb.float() - water_rgb  # (B, T, 3)
+    water_distance = torch.norm(diff_from_water, dim=2)  # (B, T)
+
+    # Penalize only if close to water color (e.g., < threshold)
+    water_threshold = 15.0  # Lower means stricter match
+    water_penalty = torch.relu(water_threshold - water_distance)  # (B, T)
+    water_loss = water_penalty.mean()
+
+
+    # 5. Color change penalty (encourages staying on roads)
+    color_diff = sampled_rgb[:, 1:] - sampled_rgb[:, :-1]
+    color_change_loss = torch.norm(color_diff.float(), dim=2).mean()
+
+    # Final total loss
+    total_loss = (
+        mse_loss
+        + distance_weight * distance_loss
+        + pace_weight * pace_loss
+        + water_weight * water_loss
+        + color_change_weight * color_change_loss
+    )
+
+    return total_loss
+
+    
 
 def train_local_map_model(model, data_loader, num_epochs=100, lr=0.001, 
-                         device='cuda', save_interval=10, save_dir='models/lstm',
+                         device='cuda', save_interval=10, save_dir='models/lstm_custom_loss',
                          log_dir='tensorboard_logs'):
     """
     Train the local map aware route generation model with step-remaining tracking
@@ -587,7 +672,7 @@ def train_local_map_model(model, data_loader, num_epochs=100, lr=0.001,
             predicted_coords = model(full_images, conditions, input_seq, steps_remaining)
             
             # Calculate primary loss (MSE)
-            loss = coord_criterion(predicted_coords, target_seq)
+            loss = custom_loss_function(predicted_coords, target_seq, conditions, steps_remaining, full_images)
             
             # Calculate additional metrics for logging
             with torch.no_grad():
@@ -678,7 +763,13 @@ def train_local_map_model(model, data_loader, num_epochs=100, lr=0.001,
             
             # Visualize and save
             sample_path = f"{save_dir}/sample_local_map_epoch_{epoch}.png"
-            visualize_routes(sample_maps, sample_routes, sample_path)
+
+            visualize_routes(
+                sample_maps,
+                sample_routes,
+                sample_path,
+                real_routes=torch.cat([input_seq, target_seq[:, -1, :].unsqueeze(1)], dim=1)[:num_samples]
+)
             print(f"Sample routes saved to {sample_path}")
             
             # Add sample route images to TensorBoard
@@ -703,7 +794,7 @@ def train_local_map_model(model, data_loader, num_epochs=100, lr=0.001,
     return model, losses
 
 
-def visualize_routes(maps, routes, save_path=None):
+def visualize_routes(maps, routes, save_path=None, real_routes=None):
     """
     Visualize generated routes on maps
     """
@@ -732,6 +823,15 @@ def visualize_routes(maps, routes, save_path=None):
         # Highlight start and end points
         axes[i].plot(route_np[0, 1], route_np[0, 0], 'go', markersize=8)  # Start: green
         axes[i].plot(route_np[-1, 1], route_np[-1, 0], 'bo', markersize=8)  # End: blue
+
+        if real_routes is not None:
+
+            # Overlay real route if provided
+            real_route_np = real_routes[i].cpu().numpy()
+            axes[i].plot(real_route_np[:, 1], real_route_np[:, 0], 'b-', linewidth=1)
+            axes[i].plot(real_route_np[0, 1], real_route_np[0, 0], 'ro', markersize=3)
+            axes[i].plot(real_route_np[-1, 1], real_route_np[-1, 0], 'mo', markersize=3)
+            
         
         axes[i].set_title(f"Generated Route {i+1}")
         axes[i].axis('off')
@@ -1136,5 +1236,5 @@ def main():
 
 if __name__ == "__main__":
 
-    profile_main()
+    # profile_main()
     results = main()
