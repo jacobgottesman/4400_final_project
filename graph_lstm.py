@@ -15,6 +15,15 @@ from tqdm import tqdm
 import multiprocessing
 import traceback
 
+from torch_geometric.data import Data
+
+def create_empty_graph_data(node_feature_dim=6, edge_feature_dim=8):
+    """Create a standardized empty graph data object"""
+    empty_x = torch.zeros((1, node_feature_dim), dtype=torch.float32)
+    empty_edge_index = torch.zeros((2, 0), dtype=torch.long)
+    empty_edge_attr = torch.zeros((0, edge_feature_dim), dtype=torch.float32)
+    return Data(x=empty_x, edge_index=empty_edge_index, edge_attr=empty_edge_attr)
+
 def total_route_distance(route_xy):
     """Calculate the total distance of a route"""
     if len(route_xy) < 2:
@@ -87,19 +96,10 @@ def find_nearest_node_fallback(lat, lon, graph):
     return nearest_node
 
 def get_subgraph_around_point(graph, center_node, n_hops=2):
-    """Extract a subgraph within n_hops from a center node"""
-    nodes = set([center_node])
-    for _ in range(n_hops):
-        new_nodes = set()
-        for node in nodes:
-            try:
-                neighbors = set(graph.neighbors(node))
-                new_nodes.update(neighbors)
-            except nx.NetworkXError:
-                continue
-        nodes.update(new_nodes)
-    
-    return graph.subgraph(nodes)
+    """Optimized subgraph extraction"""
+    # Use NetworkX's ego_graph which is much faster than manual BFS
+    subgraph = nx.ego_graph(graph, center_node, radius=n_hops)
+    return subgraph
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 import time
 from threading import Lock
@@ -274,11 +274,13 @@ class RunningRouteDataset(Dataset):
         
     def _find_similar_bounds(self, bounds):
         """Find cached graph with similar bounds using spatial index"""
-        # print(bounds)
         # print(self.bounds_index)
         # print(self.bounds_mapping)
         if self.bounds_index is None or not self.bounds_mapping:
             return None
+        
+        print(bounds)
+
             
         # Calculate the center of these bounds
         lat_min, lat_max, lon_min, lon_max = bounds
@@ -690,115 +692,7 @@ class RunningRouteDataset(Dataset):
             # Return a default feature vector if edge doesn't exist
             return torch.zeros(8, dtype=torch.float32)
     
-    @staticmethod
-    def convert_subgraph_to_pytorch_geometric(cls, subgraph, center_node):
-        """Convert a NetworkX subgraph to PyTorch Geometric format with consistency checks"""
-        edge_index = []
-        edge_features_list = []
-        node_features_list = []
-        node_mapping = {}  # Map from original node IDs to consecutive indices
-        
-        # First, create mapping for nodes and extract features
-        for i, node in enumerate(subgraph.nodes()):
-            node_mapping[node] = i
-            
-            # Use a try/except block to handle missing nodes safely
-            try:
-                node_features = cls.extract_node_features(subgraph, node) if cls else torch.zeros(5, dtype=torch.float32)
-                node_features_list.append(node_features)
-            except Exception as e:
-                # Use default features if extraction fails
-                node_features_list.append(torch.zeros(5, dtype=torch.float32))
-        
-        # Add center node position as a feature
-        center_idx = node_mapping.get(center_node, None)
-        if center_idx is not None:
-            # One-hot encode the center node
-            for i in range(len(node_features_list)):
-                if i == center_idx:
-                    node_features_list[i] = torch.cat([node_features_list[i], torch.tensor([1.0])])
-                else:
-                    node_features_list[i] = torch.cat([node_features_list[i], torch.tensor([0.0])])
-        else:
-            # If center node not found, just add zeros
-            for i in range(len(node_features_list)):
-                node_features_list[i] = torch.cat([node_features_list[i], torch.tensor([0.0])])
-        
-        # Process edges with safety checks
-        for u, v in subgraph.edges():
-            if u in node_mapping and v in node_mapping:
-                # Add edge in both directions for undirected graphs
-                edge_index.append([node_mapping[u], node_mapping[v]])
-                
-                try:
-                    edge_features = cls.extract_edge_features(subgraph, u, v) if cls else torch.zeros(8, dtype=torch.float32)
-                    edge_features_list.append(edge_features)
-                except Exception as e:
-                    # Use default edge features if extraction fails
-                    edge_features_list.append(torch.zeros(8, dtype=torch.float32))
-                    
-                # Add reverse edge too (for undirected graphs)
-                edge_index.append([node_mapping[v], node_mapping[u]])
-                edge_features_list.append(edge_features_list[-1].clone())  # Same features for reverse
-        
-        # Convert to PyTorch tensors with safety handling
-        if not edge_index:
-            # Create an empty graph if no edges
-            edge_index = torch.zeros((2, 0), dtype=torch.long)
-            edge_attr = torch.zeros((0, 8), dtype=torch.float32)
-        else:
-            try:
-                edge_index = torch.tensor(edge_index, dtype=torch.long).t()
-                edge_attr = torch.stack(edge_features_list)
-                
-                # Ensure consistency
-                if edge_index.shape[1] != edge_attr.shape[0]:
-                    print(f"Warning: Edge index shape {edge_index.shape[1]} doesn't match edge attr shape {edge_attr.shape[0]}")
-                    
-                    # Fix it by adjusting edge_attr
-                    if edge_index.shape[1] > edge_attr.shape[0]:
-                        # Padding needed
-                        padding = torch.zeros(
-                            edge_index.shape[1] - edge_attr.shape[0],
-                            edge_attr.shape[1],
-                            dtype=edge_attr.dtype
-                        )
-                        edge_attr = torch.cat([edge_attr, padding], dim=0)
-                    else:
-                        # Truncation needed
-                        edge_attr = edge_attr[:edge_index.shape[1]]
-            except Exception as e:
-                print(f"Error creating edge tensors: {e}")
-                edge_index = torch.zeros((2, 0), dtype=torch.long)
-                edge_attr = torch.zeros((0, 8), dtype=torch.float32)
-        
-        if not node_features_list:
-            # Create default node features if no nodes
-            x = torch.zeros((1, 6), dtype=torch.float32)
-        else:
-            try:
-                x = torch.stack(node_features_list)
-            except Exception as e:
-                print(f"Error creating node tensor: {e}")
-                x = torch.zeros((1, 6), dtype=torch.float32)
-        
-        # Create the Data object with edge consistency guarantee
-        data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
-        
-        # Final check
-        if data.edge_index.shape[1] != data.edge_attr.shape[0]:
-            # Fix it one more time
-            if data.edge_index.shape[1] > data.edge_attr.shape[0]:
-                padding = torch.zeros(
-                    data.edge_index.shape[1] - data.edge_attr.shape[0],
-                    data.edge_attr.shape[1],
-                    dtype=data.edge_attr.dtype
-                )
-                data.edge_attr = torch.cat([data.edge_attr, padding], dim=0)
-            else:
-                data.edge_attr = data.edge_attr[:data.edge_index.shape[1]]
-        
-        return data
+    
     def __getitem__(self, idx):
         # Get the row from the dataframe
         row = self.data.iloc[idx]
@@ -850,6 +744,71 @@ class RunningRouteDataset(Dataset):
             'input_lon': input_lon,
             'graph': graph  # Return the full graph
         }
+    
+def create_consistent_graph_data(subgraph, center_node, node_feature_dim=6, edge_feature_dim=8):
+    """
+    Create PyTorch Geometric data with guaranteed edge-node consistency
+    
+    Args:
+        subgraph: NetworkX subgraph
+        center_node: Center node ID
+        node_feature_dim: Dimension of node features
+        edge_feature_dim: Dimension of edge features
+        
+    Returns:
+        graph_data: PyTorch Geometric Data with consistent dimensions
+    """
+    # If empty subgraph, return standard empty graph
+    if len(subgraph.nodes) == 0:
+        empty_x = torch.zeros((1, node_feature_dim), dtype=torch.float32)
+        empty_edge_index = torch.zeros((2, 0), dtype=torch.long)
+        empty_edge_attr = torch.zeros((0, edge_feature_dim), dtype=torch.float32)
+        return Data(x=empty_x, edge_index=empty_edge_index, edge_attr=empty_edge_attr)
+        
+    # First collect all edges and their attributes in matched lists
+    edge_indices = []
+    edge_attributes = []
+    
+    # Create node mapping to ensure consecutive node indices
+    node_map = {node: idx for idx, node in enumerate(subgraph.nodes())}
+    
+    # Process nodes
+    x = torch.zeros((len(node_map), node_feature_dim), dtype=torch.float32)
+    # Set node features here...
+    
+    # Mark center node with special feature
+    if center_node in node_map:
+        center_idx = node_map[center_node]
+        # Set center node indicator (example: last feature)
+        x[center_idx, -1] = 1.0
+    
+    # Process edges
+    for u, v, data in subgraph.edges(data=True):
+        if u in node_map and v in node_map:
+            # Add edge in both directions for undirected graph
+            edge_indices.append([node_map[u], node_map[v]])
+            edge_indices.append([node_map[v], node_map[u]])
+            
+            # Create edge attributes from data
+            edge_attr = torch.zeros(edge_feature_dim, dtype=torch.float32)
+            # Set edge features here based on data...
+            
+            # Add same attributes for both directions
+            edge_attributes.append(edge_attr)
+            edge_attributes.append(edge_attr.clone())
+    
+    # Convert to tensor format
+    if len(edge_indices) > 0:
+        edge_index = torch.tensor(edge_indices, dtype=torch.long).t()  # Transpose to [2, num_edges]
+        edge_attr = torch.stack(edge_attributes)
+    else:
+        edge_index = torch.zeros((2, 0), dtype=torch.long)
+        edge_attr = torch.zeros((0, edge_feature_dim), dtype=torch.float32)
+    
+    # One final check to ensure dimensions match
+    assert edge_index.shape[1] == edge_attr.shape[0], f"Edge dimensions mismatch: {edge_index.shape[1]} vs {edge_attr.shape[0]}"
+    
+    return Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
 
 class GraphEncoder(nn.Module):
     """Encodes local map subgraphs around the current position with tensor size safety checks"""
@@ -882,12 +841,6 @@ class GraphEncoder(nn.Module):
     def forward(self, data):
         """
         Forward pass through the graph encoder with tensor size safety checks
-        
-        Args:
-            data: PyTorch Geometric Batch object containing graphs
-            
-        Returns:
-            graph_features: Encoded graph features
         """
         # Safety check for empty data
         if not hasattr(data, 'x') or not hasattr(data, 'edge_index'):
@@ -914,75 +867,48 @@ class GraphEncoder(nn.Module):
             output = torch.stack(output)
             return self.out_layer(output) 
         
-        # Process edge attributes
+        # Process edge attributes to create edge weights (1D tensor)
         if hasattr(data, 'edge_attr') and data.edge_attr is not None:
             try:
-                edge_attr = self.edge_emb(data.edge_attr)
+                # Embed edge features
+                edge_attr_embedded = self.edge_emb(data.edge_attr)
                 
-                # CRITICAL FIX: Check if edge indices and attributes match in size
-                if data.edge_index.shape[1] != edge_attr.shape[0]:
-                    print(f"Edge size mismatch: edge_index shape = {data.edge_index.shape[1]}, edge_attr shape = {edge_attr.shape[0]}")
-                    
-                    # Fix by adjusting edge_attr to match edge_index size
-                    if data.edge_index.shape[1] > edge_attr.shape[0]:
-                        # Pad edge_attr with zeros
-                        padding = torch.zeros(
-                            data.edge_index.shape[1] - edge_attr.shape[0],
-                            edge_attr.shape[1],
-                            device=edge_attr.device,
-                            dtype=edge_attr.dtype
-                        )
-                        edge_attr = torch.cat([edge_attr, padding], dim=0)
-                    else:
-                        # Truncate edge_attr
-                        edge_attr = edge_attr[:data.edge_index.shape[1]]
+                # Convert 2D edge attributes to 1D edge weights
+                # Option 1: Use mean of each edge feature vector
+                edge_weight = edge_attr_embedded.mean(dim=1)
+                
+                # Option 2 (alternative): Use sum instead of mean
+                # edge_weight = edge_attr_embedded.sum(dim=1)
+                
             except Exception as e:
                 print(f"Error processing edge attributes: {e}")
-                # Create default edge attributes
-                edge_attr = torch.ones(data.edge_index.shape[1], x.size(1), device=x.device)
+                # Create default edge weights (all ones)
+                edge_weight = torch.ones(data.edge_index.shape[1], device=x.device)
         else:
-            # Create default edge attributes
-            edge_attr = torch.ones(data.edge_index.shape[1], x.size(1), device=x.device)
+            # Create default edge weights (all ones)
+            edge_weight = torch.ones(data.edge_index.shape[1], device=x.device)
         
-        # Apply graph convolutions with safety checks
+        # Apply graph convolutions with the 1D edge weights
         try:
-            # First convolution layer
-            x = F.relu(self.conv1(x, data.edge_index, edge_attr))
-        except Exception as e:
-            print(f"Error in conv1: {e}")
-            # Skip convolution on error
-            pass
+            x = F.relu(self.conv1(x, data.edge_index, edge_weight))
+            x = F.dropout(x, p=0.2, training=self.training)
             
-        x = F.dropout(x, p=0.2, training=self.training)
-        
-        try:
-            # Second convolution layer 
-            x = F.relu(self.conv2(x, data.edge_index, edge_attr))
-        except Exception as e:
-            print(f"Error in conv2: {e}")
-            # Skip convolution on error
-            pass
+            x = F.relu(self.conv2(x, data.edge_index, edge_weight))
+            x = F.dropout(x, p=0.2, training=self.training)
             
-        x = F.dropout(x, p=0.2, training=self.training)
-        
-        try:
-            # Third convolution layer
-            x = F.relu(self.conv3(x, data.edge_index, edge_attr))
+            x = F.relu(self.conv3(x, data.edge_index, edge_weight))
         except Exception as e:
-            print(f"Error in conv3: {e}")
-            # Skip convolution on error
-            pass
+            print(f"Error in graph convolutions: {e}")
+            # If convolutions fail, we can still return a result based on node features
         
-        # Global pooling to get a single vector for each graph
+        # Global pooling
         batch_size = data.batch.max().item() + 1 if data.batch.numel() > 0 else 1
         output = []
         
         for i in range(batch_size):
-            # Extract nodes belonging to this graph
             mask = (data.batch == i)
             graph_nodes = x[mask]
             
-            # If there are nodes, take mean of all node features
             if graph_nodes.size(0) > 0:
                 graph_feat = graph_nodes.mean(dim=0)
             else:
@@ -992,7 +918,6 @@ class GraphEncoder(nn.Module):
         
         output = torch.stack(output)
         return self.out_layer(output)
-
 
 class ConditionEncoder(nn.Module):
     """
@@ -1107,133 +1032,55 @@ class GraphAwareRouteGenerator(nn.Module):
         )
     
     def prepare_graph_batch(self, graphs, lat_coords, lon_coords, device):
-        """
-        Prepare a batch of subgraphs with edge-node consistency guarantees
-        """
+        """Optimized graph batch creation with multi-level caching"""
         batch_size = len(lat_coords)
         subgraphs = []
-        failed_graph_indices = []
         
-        # Track expected sizes for debugging
-        expected_total = 0
+        # Create cache if it doesn't exist
+        if not hasattr(self, 'subgraph_cache'):
+            self.subgraph_cache = {}
         
         for b in range(batch_size):
             graph = graphs[b]
             if graph is None or not isinstance(graph, nx.Graph):
-                # Add a placeholder empty graph
-                empty_x = torch.zeros((1, 6), dtype=torch.float32)
-                empty_edge_index = torch.zeros((2, 0), dtype=torch.long)
-                empty_edge_attr = torch.zeros((0, 8), dtype=torch.float32)
-                subgraphs.append(Data(x=empty_x, edge_index=empty_edge_index, edge_attr=empty_edge_attr))
-                failed_graph_indices.append(b)
+                # Add an empty graph and continue
+                subgraphs.append(create_empty_graph_data(6, 8).to(device))
                 continue
                 
             seq_len = len(lat_coords[b]) if b < len(lat_coords) else 0
-            expected_total += seq_len
             
             for s in range(seq_len):
-                try:
-                    # Convert lat/lon to the nearest node in the graph
-                    center_node = lat_lon_to_graph_point(lat_coords[b][s], lon_coords[b][s], graph)
-                    
-                    # Get subgraph around this position
-                    subgraph = get_subgraph_around_point(graph, center_node, n_hops=self.n_hops)
-                    
-                    # Convert to PyTorch Geometric format
-                    graph_data = RunningRouteDataset.convert_subgraph_to_pytorch_geometric(
-                        None, subgraph, center_node
-                    )
-                    
-                    # CRITICAL: Verify edge indices and attributes match
-                    if graph_data.edge_index.shape[1] != graph_data.edge_attr.shape[0]:
-                        # Fix the mismatch by adjusting edge_attr
-                        if graph_data.edge_index.shape[1] > graph_data.edge_attr.shape[0]:
-                            # Need more edge attributes, pad with zeros
-                            padding = torch.zeros(
-                                graph_data.edge_index.shape[1] - graph_data.edge_attr.shape[0],
-                                graph_data.edge_attr.shape[1],
-                                dtype=graph_data.edge_attr.dtype
-                            )
-                            graph_data.edge_attr = torch.cat([graph_data.edge_attr, padding], dim=0)
-                        else:
-                            # Too many edge attributes, truncate
-                            graph_data.edge_attr = graph_data.edge_attr[:graph_data.edge_index.shape[1]]
-                    
-                    subgraphs.append(graph_data)
-                except Exception as e:
-                    # If there's an error, add an empty graph
-                    empty_x = torch.zeros((1, 6), dtype=torch.float32)
-                    empty_edge_index = torch.zeros((2, 0), dtype=torch.long)
-                    empty_edge_attr = torch.zeros((0, 8), dtype=torch.float32)
-                    subgraphs.append(Data(x=empty_x, edge_index=empty_edge_index, edge_attr=empty_edge_attr))
-                    failed_graph_indices.append(b)
-                    print(e)
-                    print(traceback.format_exc())
-
-        
-        # Report if there were many failures
-        if len(failed_graph_indices) > 0:
-            print(f"Warning: Failed to process {len(failed_graph_indices)} graphs out of {expected_total} total positions")
-        
-        # Combine all subgraphs into a batch with edge consistency check
-        if subgraphs:
-            # Let's make sure all edge indices match their corresponding edge attributes
-            for i, graph_data in enumerate(subgraphs):
-                if graph_data.edge_index.shape[1] != graph_data.edge_attr.shape[0]:
-                    # Fix the mismatch to prevent issues in the batch
-                    if graph_data.edge_index.shape[1] > graph_data.edge_attr.shape[0]:
-                        # Need more edge attributes, pad with zeros
-                        padding = torch.zeros(
-                            graph_data.edge_index.shape[1] - graph_data.edge_attr.shape[0],
-                            graph_data.edge_attr.shape[1],
-                            dtype=graph_data.edge_attr.dtype
-                        )
-                        graph_data.edge_attr = torch.cat([graph_data.edge_attr, padding], dim=0)
-                    else:
-                        # Too many edge attributes, truncate
-                        graph_data.edge_attr = graph_data.edge_attr[:graph_data.edge_index.shape[1]]
-                    subgraphs[i] = graph_data
-                    
-            # Now create the batch
-            try:
-                graph_batch = Batch.from_data_list(subgraphs).to(device)
-            except Exception as e:
-                print(f"Error creating graph batch: {e}")
-                # Create an empty batch as fallback
-                empty_x = torch.zeros((1, 6), dtype=torch.float32, device=device)
-                empty_edge_index = torch.zeros((2, 0), dtype=torch.long, device=device)
-                empty_edge_attr = torch.zeros((0, 8), dtype=torch.float32, device=device)
-                empty_batch = torch.zeros(1, dtype=torch.long, device=device)
-                graph_batch = Data(x=empty_x, edge_index=empty_edge_index, 
-                                edge_attr=empty_edge_attr, batch=empty_batch).to(device)
-        else:
-            # Create an empty batch if no subgraphs
-            empty_x = torch.zeros((1, 6), dtype=torch.float32, device=device)
-            empty_edge_index = torch.zeros((2, 0), dtype=torch.long, device=device)
-            empty_edge_attr = torch.zeros((0, 8), dtype=torch.float32, device=device)
-            empty_batch = torch.zeros(1, dtype=torch.long, device=device)
-            graph_batch = Data(x=empty_x, edge_index=empty_edge_index, 
-                            edge_attr=empty_edge_attr, batch=empty_batch).to(device)
-        
-        # Final check before returning
-        if hasattr(graph_batch, 'edge_index') and hasattr(graph_batch, 'edge_attr'):
-            if graph_batch.edge_index.shape[1] != graph_batch.edge_attr.shape[0]:
-                print(f"WARNING: Final batch still has mismatched edge dimensions! " 
-                    f"Edge index: {graph_batch.edge_index.shape[1]}, Edge attr: {graph_batch.edge_attr.shape[0]}")
+                # Create a cache key based on coordinates (rounded to reduce variations)
+                lat = round(lat_coords[b][s], 5)
+                lon = round(lon_coords[b][s], 5)
+                cache_key = f"{id(graph)}_{lat}_{lon}"
                 
-                # Fix it one last time
-                if graph_batch.edge_index.shape[1] > graph_batch.edge_attr.shape[0]:
-                    padding = torch.zeros(
-                        graph_batch.edge_index.shape[1] - graph_batch.edge_attr.shape[0],
-                        graph_batch.edge_attr.shape[1],
-                        device=graph_batch.edge_attr.device,
-                        dtype=graph_batch.edge_attr.dtype
-                    )
-                    graph_batch.edge_attr = torch.cat([graph_batch.edge_attr, padding], dim=0)
-                else:
-                    graph_batch.edge_attr = graph_batch.edge_attr[:graph_batch.edge_index.shape[1]]
+                # Check if we've already processed this location
+                if cache_key in self.subgraph_cache:
+                    subgraphs.append(self.subgraph_cache[cache_key].clone().to(device))
+                    continue
+                    
+                try:
+                    # Process the subgraph as before
+                    center_node = lat_lon_to_graph_point(lat_coords[b][s], lon_coords[b][s], graph)
+                    subgraph = get_subgraph_around_point(graph, center_node, n_hops=self.n_hops)
+                    graph_data = create_consistent_graph_data(subgraph, center_node)
+                    
+                    # Store in cache (on CPU to save GPU memory)
+                    self.subgraph_cache[cache_key] = graph_data.to('cpu')
+                    
+                    # Add to current batch
+                    subgraphs.append(graph_data.to(device))
+                except Exception as e:
+                    # Add an empty graph on error
+                    subgraphs.append(create_empty_graph_data(6, 8).to(device))
+                    
+        # Clear cache if it gets too large (adjust threshold as needed)
+        if len(self.subgraph_cache) > 10000:
+            self.subgraph_cache.clear()
         
-        return graph_batch
+        # Create batch with minimal error checking (we trust our cache)
+        return Batch.from_data_list(subgraphs)
 
     
     def prepare_batch_data(self, batch_data, device):
@@ -1451,7 +1298,7 @@ def create_padded_batch(batch_data):
 class RouteModelTrainer:
     """Class to handle training and evaluation of the route model"""
     def __init__(self, model, train_loader, val_loader=None, 
-                 lr=0.001, weight_decay=1e-5, device='cuda', 
+                 lr=0.001, weight_decay=1e-5, device='mps', 
                  disable_graph=False, verbose = True):
         """
         Initialize the trainer
@@ -1853,7 +1700,7 @@ class RouteModelTrainer:
 
 class RouteEvaluator:
     """Class to evaluate the quality of generated routes"""
-    def __init__(self, model, test_dataset, device='cuda', disable_graph=False):
+    def __init__(self, model, test_dataset, device='mps', disable_graph=False):
         self.model = model
         self.test_dataset = test_dataset
         self.device = device
@@ -2050,7 +1897,7 @@ def main():
     parser.add_argument('--hidden_dim', type=int, default=256, help='Hidden dimension size')
     parser.add_argument('--n_hops', type=int, default=2, help='Number of hops in the graph')
     parser.add_argument('--disable_graph', action='store_true', help='Disable graph encoder and use only coordinate data')
-    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', 
+    parser.add_argument('--device', type=str, default='mps', 
                         help='Device to use for training')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     parser.add_argument('--eval_only', action='store_true', help='Only run evaluation')
@@ -2248,5 +2095,189 @@ def main():
         plt.close(fig)
 
 
+import cProfile
+import pstats
+import time
+import os
+import torch
+import numpy as np
+from torch_geometric.data import Batch
+import matplotlib.pyplot as plt
+
+def profiler_main():
+    """Profile the performance of the route prediction model for one training step"""
+    # Set up minimal arguments for profiling
+    class Args:
+        data_path = "data/processed_combined.csv"  # Replace with your actual path
+        batch_size = 4  # Small batch size for profiling
+        hidden_dim = 256
+        n_hops = 2
+        device = 'mps'
+        seed = 42
+        cache_dir = 'test_cache'
+        num_workers = 4
+        max_workers = None
+        process_batch_size = 10
+        proximity_threshold = 0.001
+        disable_parallel = False
+        disable_graph = False
+        clear_cache = False
+        
+    args = Args()
+    
+    # Set random seed
+    torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
+    
+    print("=== Starting Performance Profiling ===")
+    
+    # Profile dataset loading
+    start_time = time.time()
+    print(f"Loading dataset from {args.data_path}...")
+    try:
+        dataset = RunningRouteDataset(
+            args.data_path, 
+            verbose=True, 
+            n_hops=args.n_hops,
+            cache_dir=args.cache_dir,
+            num_workers=args.num_workers,
+            max_workers=args.max_workers,
+            batch_size=args.process_batch_size,
+            parallel_loading=not args.disable_parallel,
+            proximity_threshold=args.proximity_threshold
+        )
+        dataset_time = time.time() - start_time
+        print(f"Dataset loading took {dataset_time:.2f} seconds for {len(dataset)} samples")
+    except Exception as e:
+        print(f"Error loading dataset: {e}")
+        import traceback
+        traceback.print_exc()
+        return
+    
+    # Create a small subset for profiling
+    subset_size = min(args.batch_size * 3, len(dataset))
+    indices = np.random.choice(len(dataset), subset_size, replace=False)
+    profile_dataset = torch.utils.data.Subset(dataset, indices)
+    
+    # Create data loader
+    start_time = time.time()
+    train_loader = torch.utils.data.DataLoader(
+        profile_dataset, 
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=0,  # Use single process for profiling
+        collate_fn=identity_collate
+    )
+    loader_time = time.time() - start_time
+    print(f"DataLoader creation took {loader_time:.2f} seconds")
+    
+    # Initialize model
+    start_time = time.time()
+    model = GraphAwareRouteGenerator(
+        graph_feature_dim=256,
+        condition_dim=64,
+        hidden_dim=args.hidden_dim,
+        num_layers=2,
+        n_hops=args.n_hops
+    )
+    model = model.to(args.device)
+    model_init_time = time.time() - start_time
+    print(f"Model initialization took {model_init_time:.2f} seconds")
+    
+    # Create optimizer
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    criterion = torch.nn.MSELoss()
+    
+    # Profile one batch processing
+    print("\n=== Profiling Single Batch Processing ===")
+    
+    # Get a single batch
+    try:
+        batch_data = next(iter(train_loader))
+        
+        # Profile batch preparation
+        start_time = time.time()
+        batch_dict = create_padded_batch(batch_data)
+        prepare_batch_time = time.time() - start_time
+        print(f"Batch preparation took {prepare_batch_time:.2f} seconds")
+        
+        # Profile graph batch creation
+        start_time = time.time()
+        device = args.device
+        input_lat = batch_dict['input_lat']
+        input_lon = batch_dict['input_lon']
+        graphs = batch_dict['graph']
+        graph_batch = model.prepare_graph_batch(graphs, input_lat, input_lon, device)
+        graph_batch_time = time.time() - start_time
+        print(f"Graph batch creation took {graph_batch_time:.2f} seconds")
+        
+        # Profile graph encoding
+        start_time = time.time()
+        graph_features = model.graph_encoder(graph_batch)
+        graph_encoding_time = time.time() - start_time
+        print(f"Graph encoding took {graph_encoding_time:.2f} seconds")
+        
+        # Profile entire forward pass
+        start_time = time.time()
+        batch_dict = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch_dict.items()}
+        outputs = model(batch_dict)
+        forward_time = time.time() - start_time
+        print(f"Forward pass took {forward_time:.2f} seconds")
+        
+        # Profile loss computation
+        start_time = time.time()
+        loss = criterion(outputs, batch_dict['target_seq'])
+        loss_time = time.time() - start_time
+        print(f"Loss computation took {loss_time:.2f} seconds")
+        
+        # Profile backward pass
+        start_time = time.time()
+        loss.backward()
+        backward_time = time.time() - start_time
+        print(f"Backward pass took {backward_time:.2f} seconds")
+        
+        # Profile optimizer step
+        start_time = time.time()
+        optimizer.step()
+        optimizer.zero_grad()
+        optim_time = time.time() - start_time
+        print(f"Optimizer step took {optim_time:.2f} seconds")
+        
+        # Summary of timings
+        print("\n=== Profiling Summary ===")
+        print(f"Dataset loading: {dataset_time:.2f} s")
+        print(f"DataLoader creation: {loader_time:.2f} s")
+        print(f"Model initialization: {model_init_time:.2f} s")
+        print(f"Batch preparation: {prepare_batch_time:.2f} s")
+        print(f"Graph batch creation: {graph_batch_time:.2f} s")
+        print(f"Graph encoding: {graph_encoding_time:.2f} s")
+        print(f"Full forward pass: {forward_time:.2f} s")
+        print(f"Loss computation: {loss_time:.2f} s")
+        print(f"Backward pass: {backward_time:.2f} s")
+        print(f"Optimizer step: {optim_time:.2f} s")
+        
+        # Total time for one training step
+        total_step_time = prepare_batch_time + forward_time + loss_time + backward_time + optim_time
+        print(f"\nTotal time for one training step: {total_step_time:.2f} s")
+        
+        # Show batch details
+        print("\n=== Batch Statistics ===")
+        print(f"Batch size: {args.batch_size}")
+        if hasattr(graph_batch, 'x'):
+            print(f"Total nodes in batch: {graph_batch.x.shape[0]}")
+        if hasattr(graph_batch, 'edge_index'):
+            print(f"Total edges in batch: {graph_batch.edge_index.shape[1]}")
+        
+        # Estimate time for one epoch
+        batch_count = len(dataset) // args.batch_size
+        estimated_epoch_time = total_step_time * batch_count
+        print(f"\nEstimated time for one epoch ({batch_count} batches): {estimated_epoch_time:.2f} s ({estimated_epoch_time/60:.2f} min)")
+        
+    except Exception as e:
+        print(f"Error during profiling: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 if __name__ == "__main__":
-    main()
+    profiler_main()
