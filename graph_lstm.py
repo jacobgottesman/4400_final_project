@@ -1213,7 +1213,7 @@ class GraphAwareRouteGenerator(nn.Module):
         graph_batch = Batch.from_data_list(processed_graphs)
         return graph_batch
     
-    def prepare_graph_batch_simple(self, graphs, lat_coords, lon_coords, device):
+    def prepare_graph_batch_simple_full_map(self, graphs, lat_coords, lon_coords, device):
         """
         Simplified graph batch preparation that processes each graph once
         without subgraph extraction or error handling
