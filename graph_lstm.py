@@ -1701,7 +1701,7 @@ class RouteModelTrainer:
             
             # Combine the losses
             # You can adjust these weights based on your priorities
-            combined_loss = mse_loss + 4 * direction_loss
+            combined_loss = mse_loss + .2 * direction_loss
         else:
             combined_loss = mse_loss
         
