@@ -112,7 +112,7 @@ import json
 class RunningRouteDataset(Dataset):
     def __init__(self, csv_path, transform=None, verbose=False, n_hops=2, cache_dir=None, 
                  num_workers=4, parallel_loading=True, proximity_threshold=0.001, 
-                 max_workers=None, batch_size=10):
+                 max_workers=None, batch_size=10, num_samples = 1000):
         """
         Dataset for running routes using OSMnx graph data
         
@@ -130,7 +130,7 @@ class RunningRouteDataset(Dataset):
         """
         print(f"Loading dataset from {csv_path}...")
         self.data = pd.read_csv(csv_path)
-        self.data = self.data.iloc[0:1000, :]
+        self.data = self.data.iloc[0:num_samples, :]
         routes = []
         for _, row in self.data.iterrows():
             latitudes = eval(row['latitude'])
@@ -167,19 +167,32 @@ class RunningRouteDataset(Dataset):
         if self.parallel_loading and self.cache_dir:
             os.makedirs(self.cache_dir, exist_ok=True)
             # First load existing cached graphs
-            self._load_existing_cache()
+            self._load_existing_cache(num_samples)
             # Then load any missing graphs in parallel
             self._preload_graphs_parallel()
             
         print("Dataset preparation complete!")
         
-    def _load_existing_cache(self):
+    def _load_existing_cache(self, num_samples):
         """Load existing cached graphs and build spatial index for proximity lookups"""
         if not self.cache_dir or not os.path.exists(self.cache_dir):
             return
             
         print("Loading existing graph cache...")
         cache_files = [f for f in os.listdir(self.cache_dir) if f.endswith('.pkl')]
+        def is_valid_graph_file(f):
+            parts = f.split('_')
+            if len(parts) < 2 or not parts[0] == 'graph':
+                return False
+            try:
+                index = int(parts[1].split('.')[0])
+                return index < num_samples
+            except ValueError:
+                return False
+
+        cache_files = [f for f in cache_files if is_valid_graph_file(f)]
+
+        cache_files
         
         if not cache_files:
             print("No existing cached graphs found.")
@@ -221,39 +234,21 @@ class RunningRouteDataset(Dataset):
             if cache_file == 'cache_metadata.json':
                 continue
                 
-            try:
-                cache_path = os.path.join(self.cache_dir, cache_file)
-                with open(cache_path, 'rb') as f:
-                    graph = pickle.load(f)
-                    
-                # Extract route_id from filename, handling both formats
-                if cache_file.startswith('graph_'):
-                    # Remove 'graph_' prefix and '.pkl' suffix
-                    id_part = cache_file[6:-4]
-                    
-                    # Handle the bounds format separately
-                    if id_part.startswith('bounds_'):
-                        # This is a bounds-based cache, just use the hash as an identifier
-                        bounds_hash = id_part[7:]  # Remove 'bounds_' prefix
-                        # Store with a special prefix to avoid collision with route IDs
-                        with self.cache_lock:
-                            self.graph_cache[f"bounds:{bounds_hash}"] = graph
-                    else:
-                        # Try to convert to integer (route ID format)
-                        try:
-                            route_id = int(id_part)
-                            # Update in-memory cache
-                            with self.cache_lock:
-                                self.graph_cache[route_id] = graph
-                        except ValueError:
-                            # If not an integer, use as string key
-                            with self.cache_lock:
-                                self.graph_cache[id_part] = graph
-                                
-                    loaded_count += 1
-            except Exception as e:
-                if self.verbose:
-                    print(f"Error loading cached graph {cache_file}: {e}")
+            cache_path = os.path.join(self.cache_dir, cache_file)
+            with open(cache_path, 'rb') as f:
+                graph = pickle.load(f)
+                
+            # Extract route_id from filename, handling both formats
+            if cache_file.startswith('graph_'):
+                # Remove 'graph_' prefix and '.pkl' suffix
+                id_part = cache_file[6:-4]
+
+                route_id = int(id_part)  # Convert to integer
+
+                with self.cache_lock:
+                    self.graph_cache[route_id] = graph               
+                            
+                loaded_count += 1
                     
         print(f"Loaded {loaded_count} graphs from cache")
         
@@ -263,14 +258,7 @@ class RunningRouteDataset(Dataset):
         # Round to reduce floating point precision issues
         key = (round(lat_min, 6), round(lat_max, 6), round(lon_min, 6), round(lon_max, 6))
         return key
-        
-    def _get_bounds_hash(self, bounds):
-        """Generate a hash from bounds that can be used as a file name"""
-        # Round to reduce precision and avoid floating point issues
-        rounded = tuple(round(x, 6) for x in bounds)
-        # Convert to string and hash
-        bounds_str = str(rounded)
-        return hashlib.md5(bounds_str.encode()).hexdigest()
+
         
     def _find_similar_bounds(self, bounds):
         """Find cached graph with similar bounds using spatial index"""
@@ -278,9 +266,6 @@ class RunningRouteDataset(Dataset):
         # print(self.bounds_mapping)
         if self.bounds_index is None or not self.bounds_mapping:
             return None
-        
-        print(bounds)
-
             
         # Calculate the center of these bounds
         lat_min, lat_max, lon_min, lon_max = bounds
@@ -339,12 +324,7 @@ class RunningRouteDataset(Dataset):
                 cache_path = os.path.join(self.cache_dir, f"graph_{route_id}.pkl")
                 if os.path.exists(cache_path):
                     continue
-                    
-                # Check if a similar bounds hash exists in cache
-                bounds_hash = self._get_bounds_hash(bounds)
-                bounds_cache_path = os.path.join(self.cache_dir, f"graph_bounds_{bounds_hash}.pkl")
-                if os.path.exists(bounds_cache_path):
-                    continue
+                
             
             # If we get here, we need to load this graph
             to_load.append((route_id, bounds))
@@ -433,9 +413,9 @@ class RunningRouteDataset(Dataset):
             # Save by route ID
             route_cache_path = os.path.join(self.cache_dir, f"graph_{route_id}.pkl")
             
-            # Also save by bounds hash for similarity lookup
-            bounds_hash = self._get_bounds_hash(bounds)
-            bounds_cache_path = os.path.join(self.cache_dir, f"graph_bounds_{bounds_hash}.pkl")
+            # # Also save by bounds hash for similarity lookup
+            # bounds_hash = self._get_bounds_hash(bounds)
+            # bounds_cache_path = os.path.join(self.cache_dir, f"graph_bounds_{bounds_hash}.pkl")
             
             try:
                 # Only save once (either route hasn't been cached or bounds haven't been cached)
@@ -443,9 +423,9 @@ class RunningRouteDataset(Dataset):
                     with open(route_cache_path, 'wb') as f:
                         pickle.dump(graph, f)
                         
-                if not os.path.exists(bounds_cache_path):
-                    with open(bounds_cache_path, 'wb') as f:
-                        pickle.dump(graph, f)
+                # if not os.path.exists(bounds_cache_path):
+                #     with open(bounds_cache_path, 'wb') as f:
+                #         pickle.dump(graph, f)
             except Exception as e:
                 if self.verbose:
                     print(f"Error saving graph to cache: {e}")
@@ -999,7 +979,89 @@ class ImprovedRoutePredictor(nn.Module):
         
         return next_coords, hidden
 
-
+# Define this outside of any class, at the module level
+def process_single_coord_worker(args):
+    """Standalone worker function that can be pickled"""
+    import torch
+    import networkx as nx
+    import osmnx as ox
+    from torch_geometric.data import Data
+    
+    idx, lat, lon, graph = args
+    
+    try:
+        # Get center node
+        node_id = ox.distance.nearest_nodes(graph, lon, lat)
+        
+        # Create subgraph
+        subgraph = nx.ego_graph(graph, node_id, radius=2)
+        
+        # Create node features
+        num_nodes = len(subgraph.nodes())
+        x = torch.zeros((num_nodes, 4), dtype=torch.float32)
+        
+        # Create node mapping for the subgraph
+        node_map = {node: idx for idx, node in enumerate(subgraph.nodes())}
+        
+        # Add node features
+        for i, (id, node_data) in enumerate(subgraph.nodes(data=True)):
+            if 'pos' in node_data:
+                x[i, 0:2] = torch.tensor(node_data['pos'], dtype=torch.float32)
+            if id == node_id:
+                x[i, 2] = 1.0  # Center node indicator
+            if 'highway' in node_data:
+                x[i, 3] = 1.0
+        
+        # Process edges
+        edge_indices = []
+        edge_attrs = []
+        
+        for u, v, data in subgraph.edges(data=True):
+            if u in node_map and v in node_map:
+                src_idx = node_map[u]
+                dst_idx = node_map[v]
+                
+                # Add bidirectional edges
+                edge_indices.append([src_idx, dst_idx])
+                edge_indices.append([dst_idx, src_idx])
+                
+                # Create edge attributes
+                edge_attr = torch.zeros(5, dtype=torch.float32)
+                
+                if 'length' in data:
+                    edge_attr[0] = data['length']
+                if 'grade' in data:
+                    edge_attr[1] = data['grade']
+                if 'highway' in data:
+                    edge_attr[2] = 1.0
+                if 'oneway' in data and data['oneway']:
+                    edge_attr[3] = 1.0
+                if 'weight' in data:
+                    edge_attr[4] = data['weight']
+                
+                edge_attrs.append(edge_attr)
+                edge_attrs.append(edge_attr.clone())
+        
+        # Convert to tensors
+        if edge_indices:
+            edge_index = torch.tensor(edge_indices, dtype=torch.long).t()
+            edge_attr = torch.stack(edge_attrs)
+        else:
+            edge_index = torch.zeros((2, 0), dtype=torch.long)
+            edge_attr = torch.zeros((0, 5), dtype=torch.float32)
+        
+        # Create data object
+        graph_data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+        return idx, graph_data
+    
+    except Exception as e:
+        # Create an empty graph on error
+        print(f"Error processing node {idx}: {e}")
+        empty_x = torch.zeros((1, 4), dtype=torch.float32)
+        empty_edge_index = torch.zeros((2, 0), dtype=torch.long)
+        empty_edge_attr = torch.zeros((0, 5), dtype=torch.float32)
+        return idx, Data(x=empty_x, edge_index=empty_edge_index, edge_attr=empty_edge_attr)
+    
 class GraphAwareRouteGenerator(nn.Module):
     """Enhanced model with graph awareness and steps remaining information"""
     def __init__(self, graph_feature_dim=256, condition_dim=64, hidden_dim=256, 
@@ -1011,8 +1073,8 @@ class GraphAwareRouteGenerator(nn.Module):
         
         # Graph encoder instead of image encoder
         self.graph_encoder = GraphEncoder(
-            node_feature_dim=6,  # 5 node features + 1 for center node indicator
-            edge_feature_dim=8,
+            node_feature_dim=4,  # 5 node features + 1 for center node indicator
+            edge_feature_dim=5,
             hidden_dim=128,
             output_dim=graph_feature_dim
         )
@@ -1030,6 +1092,54 @@ class GraphAwareRouteGenerator(nn.Module):
             hidden_dim=hidden_dim,
             num_layers=num_layers
         )
+
+
+
+    # Then modify your class method to use this function
+    def prepare_graph_batch_simple_parallel(self, graphs, lat_coords, lon_coords, device, num_workers=30):
+        """
+        Parallel implementation of graph batch preparation
+        """
+        import concurrent.futures
+        import torch
+        from torch_geometric.data import Batch
+        
+        batch_size = len(lat_coords)
+        tasks = []
+        
+        # Prepare tasks for parallel processing
+        for b in range(batch_size):
+            graph = graphs[b]
+            for i, (lat, lon) in enumerate(zip(lat_coords[b], lon_coords[b])):
+                # Create a unique index for this task
+                idx = len(tasks)
+                # Pass the full graph directly in the task
+                tasks.append((idx, lat, lon, graph))
+        
+        # Process in parallel
+        processed_graphs = [None] * len(tasks)
+        
+        # Use fewer workers if there are few tasks
+        actual_workers = min(num_workers, max(1, len(tasks)))
+        
+        try:
+            with concurrent.futures.ProcessPoolExecutor(max_workers=actual_workers) as executor:
+                # Use the standalone function defined at module level
+                for idx, graph_data in executor.map(process_single_coord_worker, tasks):
+                    processed_graphs[idx] = graph_data
+        except Exception as e:
+            print(f"Error in parallel processing: {e}")
+            # Fall back to sequential processing
+            for task in tasks:
+                idx, graph_data = process_single_coord_worker(task)
+                processed_graphs[idx] = graph_data
+        
+        # Move all graphs to the right device
+        processed_graphs = [g.to(device) for g in processed_graphs]
+        
+        # Create batch
+        graph_batch = Batch.from_data_list(processed_graphs)
+        return graph_batch
     
     def prepare_graph_batch(self, graphs, lat_coords, lon_coords, device):
         """Optimized graph batch creation with multi-level caching"""
@@ -1076,7 +1186,7 @@ class GraphAwareRouteGenerator(nn.Module):
                     subgraphs.append(create_empty_graph_data(6, 8).to(device))
                     
         # Clear cache if it gets too large (adjust threshold as needed)
-        if len(self.subgraph_cache) > 10000:
+        if len(self.subgraph_cache) > 1000000:
             self.subgraph_cache.clear()
         
         # Create batch with minimal error checking (we trust our cache)
@@ -1092,9 +1202,13 @@ class GraphAwareRouteGenerator(nn.Module):
         conditions = batch_data['conditions'].to(device)
         steps_remaining = batch_data['steps_remaining'].to(device)
         graph = batch_data['graph']
+
         
         # Prepare graph batch
-        graph_batch = self.prepare_graph_batch(graph, input_lat, input_lon, device)
+        # graph_batch = self.prepare_graph_batch(graph, input_lat, input_lon, device)
+        graph_batch = self.prepare_graph_batch_simple_parallel(graph, input_lat, input_lon, device)
+        # graph_batch = Batch.from_data_list(graph_batch).to(device)
+        # print(graph_batch.shape)
         
         # Encode graph features
         graph_features = self.graph_encoder(graph_batch)
@@ -1488,13 +1602,13 @@ class RouteModelTrainer:
                 batch = create_padded_batch(batch_data)
                 
                 # Add debugging code to check tensor shapes
-                if self.verbose:
-                    print(f"\nBatch shapes:")
-                    for key, value in batch.items():
-                        if isinstance(value, torch.Tensor):
-                            print(f"  {key}: {value.shape}")
-                        elif isinstance(value, list) and len(value) > 0:
-                            print(f"  {key}: list with {len(value)} items")
+                # if self.verbose:
+                #     print(f"\nBatch shapes:")
+                #     for key, value in batch.items():
+                #         if isinstance(value, torch.Tensor):
+                #             print(f"  {key}: {value.shape}")
+                #         elif isinstance(value, list) and len(value) > 0:
+                #             print(f"  {key}: list with {len(value)} items")
                 
                 # Zero the gradients
                 self.optimizer.zero_grad()
@@ -1694,6 +1808,12 @@ class RouteModelTrainer:
                     'val_loss': val_loss if val_loss is not None else None,
                     'disable_graph': self.disable_graph,
                 }, os.path.join(checkpoint_dir, f'model_epoch_{epoch+1}.pt'))
+
+            viz_path = os.path.join(checkpoint_dir, f'route_comparison_{epoch}.png')
+            # visualize route comparison
+            fig  = self.model.visualize_route_comparison(0, save_path=viz_path)
+            
+
         
         return train_losses, val_losses
 
@@ -1888,7 +2008,7 @@ def main():
     # Set up command line arguments
     import argparse
     parser = argparse.ArgumentParser(description='Train running route prediction model')
-    parser.add_argument('--data_path', type=str, required=True, help='Path to dataset CSV')
+    parser.add_argument('--data_path', type=str, default="data/processed_combined.csv", help='Path to dataset CSV')
     parser.add_argument('--checkpoint_dir', type=str, default='checkpoints', help='Directory to save checkpoints')
     parser.add_argument('--batch_size', type=int, default=8, help='Initial batch size for training')
     parser.add_argument('--max_batch_size', type=int, default=32, help='Maximum batch size to try during training')
@@ -1906,7 +2026,7 @@ def main():
     # Add new arguments for parallel graph loading
     parser.add_argument('--num_workers', type=int, default=4, help='Number of workers for parallel graph loading')
     parser.add_argument('--max_workers', type=int, help='Maximum workers for parallel graph loading')
-    parser.add_argument('--cache_dir', type=str, default='graph_cache', help='Directory to cache graph data')
+    parser.add_argument('--cache_dir', type=str, default='test_cache', help='Directory to cache graph data')
     parser.add_argument('--disable_parallel', action='store_true', help='Disable parallel graph loading')
     parser.add_argument('--proximity_threshold', type=float, default=0.001, 
                         help='Threshold for considering bounds as similar (in degrees)')
@@ -1914,6 +2034,8 @@ def main():
                         help='Batch size for parallel processing')
     parser.add_argument('--clear_cache', action='store_true', 
                         help='Clear the graph cache before loading')
+    parser.add_argument('--num_samples', type=int, default=1000,
+                        help='Number of samples to load for training')
     args = parser.parse_args()
     
     # Set random seed
@@ -1942,7 +2064,8 @@ def main():
             max_workers=args.max_workers,
             batch_size=args.process_batch_size,
             parallel_loading=not args.disable_parallel,
-            proximity_threshold=args.proximity_threshold
+            proximity_threshold=args.proximity_threshold,
+            num_samples = args.num_samples
         )
         print(f"Successfully loaded {len(dataset)} samples")
     except Exception as e:
@@ -2122,6 +2245,7 @@ def profiler_main():
         disable_parallel = False
         disable_graph = False
         clear_cache = False
+        num_samples = 100
         
     args = Args()
     
@@ -2144,7 +2268,8 @@ def profiler_main():
             max_workers=args.max_workers,
             batch_size=args.process_batch_size,
             parallel_loading=not args.disable_parallel,
-            proximity_threshold=args.proximity_threshold
+            proximity_threshold=args.proximity_threshold,
+            num_samples=args.num_samples
         )
         dataset_time = time.time() - start_time
         print(f"Dataset loading took {dataset_time:.2f} seconds for {len(dataset)} samples")
@@ -2207,7 +2332,8 @@ def profiler_main():
         input_lat = batch_dict['input_lat']
         input_lon = batch_dict['input_lon']
         graphs = batch_dict['graph']
-        graph_batch = model.prepare_graph_batch(graphs, input_lat, input_lon, device)
+        # graph_batch = model.prepare_graph_batch(graphs, input_lat, input_lon, device)
+        graph_batch = graphs
         graph_batch_time = time.time() - start_time
         print(f"Graph batch creation took {graph_batch_time:.2f} seconds")
         
@@ -2280,4 +2406,4 @@ def profiler_main():
 
 
 if __name__ == "__main__":
-    profiler_main()
+    main()
