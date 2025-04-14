@@ -1213,6 +1213,78 @@ class GraphAwareRouteGenerator(nn.Module):
         graph_batch = Batch.from_data_list(processed_graphs)
         return graph_batch
     
+    def prepare_graph_batch_simple(self, graphs, lat_coords, lon_coords, device):
+        """
+        Simplified graph batch preparation that processes each graph once
+        without subgraph extraction or error handling
+        """
+        batch_size = len(lat_coords)
+        processed_graphs = []
+        
+        for b in range(batch_size):
+            graph = graphs[b]
+            seq_len = len(lat_coords[b])
+            
+            # Create single node feature tensor for all nodes
+            num_nodes = len(graph.nodes())
+            x = torch.zeros((num_nodes, 6), dtype=torch.float32)
+            
+            # Add basic node features (could add real features here)
+            for i, (node_id, node_data) in enumerate(graph.nodes(data=True)):
+                if 'pos' in node_data:
+                    x[i, 0:2] = torch.tensor(node_data['pos'], dtype=torch.float32)
+                if 'elevation' in node_data:
+                    x[i, 2] = node_data['elevation']
+                if 'highway' in node_data:  # One-hot encoding for road type
+                    x[i, 3] = 1.0
+            
+            # Create node mapping
+            node_map = {node: idx for idx, node in enumerate(graph.nodes())}
+            
+            # Process edges to create edge_index and edge_attr tensors
+            num_edges = len(graph.edges())
+            edge_indices = []
+            edge_attrs = []
+            
+            for u, v, data in graph.edges(data=True):
+                # Convert to indices in our node mapping
+                src_idx = node_map[u]
+                dst_idx = node_map[v]
+                
+                # Add bidirectional edges
+                edge_indices.append([src_idx, dst_idx])
+                edge_indices.append([dst_idx, src_idx])
+                
+                # Create edge attributes
+                edge_attr = torch.zeros(8, dtype=torch.float32)
+                
+                # Add real edge features if available
+                if 'length' in data:
+                    edge_attr[0] = data['length']
+                if 'grade' in data:
+                    edge_attr[1] = data['grade']
+                if 'highway' in data:
+                    edge_attr[2] = 1.0
+                if 'oneway' in data and data['oneway']:
+                    edge_attr[3] = 1.0
+                    
+                # Add same attributes for both directions
+                edge_attrs.append(edge_attr)
+                edge_attrs.append(edge_attr.clone())
+            
+            # Convert to tensors
+            edge_index = torch.tensor(edge_indices, dtype=torch.long).t()
+            edge_attr = torch.stack(edge_attrs)
+            
+            # Create one graph object per sequence position
+            for s in range(seq_len):
+                graph_data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+                processed_graphs.append(graph_data)
+        
+        # Create batch
+        graph_batch = Batch.from_data_list(processed_graphs).to(device)
+        return graph_batch
+    
     def prepare_graph_batch(self, graphs, lat_coords, lon_coords, device):
         """Optimized graph batch creation with multi-level caching"""
         batch_size = len(lat_coords)
