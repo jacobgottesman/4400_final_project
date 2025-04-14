@@ -15,7 +15,14 @@ from tqdm import tqdm
 import functools
 import multiprocessing
 import traceback
+from utils.preprocessing import get_route_distance
+import matplotlib.pyplot as plt
+import datetime
 
+def get_datetime_string():
+    from datetime import datetime
+    now = datetime.now()
+    return now.strftime("%Y%m%d-%H%M%S")
 from torch_geometric.data import Data
 
 def create_empty_graph_data(node_feature_dim=6, edge_feature_dim=8):
@@ -113,7 +120,7 @@ import json
 class RunningRouteDataset(Dataset):
     def __init__(self, csv_path, transform=None, verbose=False, n_hops=2, cache_dir=None, 
                  num_workers=4, parallel_loading=True, proximity_threshold=0.001, 
-                 max_workers=None, batch_size=10, num_samples = 1000):
+                 max_workers=None, batch_size=10, num_samples = 1000, device = "mps"):
         """
         Dataset for running routes using OSMnx graph data
         
@@ -131,12 +138,17 @@ class RunningRouteDataset(Dataset):
         """
         print(f"Loading dataset from {csv_path}...")
         self.data = pd.read_csv(csv_path)
-        self.data = self.data.iloc[0:num_samples, :]
+        self.data = self.data[~self.data['nearest_nodes'].isna()]
+        if num_samples < len(self.data):
+            self.data = self.data.iloc[0:num_samples, :]
         routes = []
+        nearest_nodes = []
         for _, row in self.data.iterrows():
             latitudes = eval(row['latitude'])
             longitudes = eval(row['longitude'])
+            nearest_nodes.append(eval(row['nearest_nodes']))
             routes.append(list(zip(latitudes, longitudes)))
+        self.nearest_nodes = nearest_nodes
         self.route_xy = routes
         self.transform = transform
         self.verbose = verbose
@@ -152,27 +164,24 @@ class RunningRouteDataset(Dataset):
         self.batch_size = batch_size
         self.bounds_index = None  # KDTree for efficient bound matching
         self.bounds_mapping = {}  # Mapping from KDTree indices to cache keys
-        
-        print(f"Processing heart rate data for {len(self.data)} routes...")
-        # Preprocess heart_rate data
-        self.data['avg_heart_rate'] = self.data['heart_rate'].apply(
-            lambda x: np.mean(eval(x)) if isinstance(x, str) else (
-                np.mean(x) if isinstance(x, list) else x
-            )
-        )
+        self.subgraph_mapping = pickle.load(open('data/sub_graph_dict.pkl', 'rb'))
+        self.device = device
+
         
         # Extract bounds for each route if needed
         self.data['bounds'] = [self._calculate_bounds(route) for route in self.route_xy]
         
-        # Preload graphs in parallel if specified and cache directory exists
-        if self.parallel_loading and self.cache_dir:
-            os.makedirs(self.cache_dir, exist_ok=True)
-            # First load existing cached graphs
-            self._load_existing_cache(num_samples)
-            # Then load any missing graphs in parallel
-            self._preload_graphs_parallel()
+        # # Preload graphs in parallel if specified and cache directory exists
+        # if self.parallel_loading and self.cache_dir:
+        #     os.makedirs(self.cache_dir, exist_ok=True)
+        #     # First load existing cached graphs
+        #     self._load_existing_cache(num_samples)
+        #     # Then load any missing graphs in parallel
+        #     self._preload_graphs_parallel()
+
+        
             
-        print("Dataset preparation complete!")
+        # print("Dataset preparation complete!")
         
     def _load_existing_cache(self, num_samples):
         """Load existing cached graphs and build spatial index for proximity lookups"""
@@ -679,11 +688,12 @@ class RunningRouteDataset(Dataset):
         row = self.data.iloc[idx]
         
         # Get route coordinates
-        route_xy = np.array(eval(row['route_xy'])) if isinstance(row['route_xy'], str) else row['route_xy']
+        route_xy = self.route_xy[idx]
         route_tensor = torch.tensor(route_xy, dtype=torch.float32)
         
         # Get conditional parameters
-        distance = torch.tensor([total_route_distance(route_xy)], dtype=torch.float32)
+        distance = torch.tensor([row['distance']], dtype=torch.float32)
+
         # Extract start and end points
         start_point = torch.tensor(route_xy[0], dtype=torch.float32)
         end_point = torch.tensor(route_xy[-1], dtype=torch.float32)
@@ -693,8 +703,45 @@ class RunningRouteDataset(Dataset):
         route_lon = eval(row['longitude']) if 'longitude' in row else np.array([p[1] for p in route_xy])
         
         # Get or create graph for this route
-        route_id = row['index']
+        route_id = row['i']
+
+        sub_graphs = [self.subgraph_mapping[node] for node in eval(row['nearest_nodes'])[:-1]]
         graph = self.get_graph_for_route(route_id, row['bounds'])
+
+        # closest_nodes = [ox.distance.nearest_nodes(graph, lat, lon) for lat, lon in zip(route_lat, route_lon)]
+
+        # nodes = set(closest_nodes)
+
+        # for node in nodes:
+        #     if self.subgraph_mapping.get(node, 0) != 0:
+        #         nodes.remove(node)
+
+        # nodes = list(nodes)        
+        # tasks = []
+
+            # Second, create processing tasks with unique node information
+        # for i, node in enumerate(nodes):
+        #     # Create a unique index for this task
+        #     tasks.append((idx, node))
+        
+        # Process in parallel
+        # processed_graphs = [None] * len(tasks)
+        
+        # Use fewer workers if there are few tasks
+        # actual_workers = min(self.num_workers, max(1, len(tasks)))
+        
+        # with ThreadPoolExecutor(max_workers=actual_workers) as executor:
+        #     def worker(args):
+        #         idx, node_id = args
+        #         # Call the cached function
+        #         graph_data = process_node(node_id, graph)
+        #         self.subgraph_mapping[node_id] = graph_data
+        #         return idx, graph_data
+            
+        #     for i, (task_idx, graph_data) in enumerate(executor.map(worker, tasks)):
+        #         processed_graphs[i] = graph_data 
+
+        # sub_graphs = [self.subgraph_mapping[i].to(self.device) for i in closest_nodes]
         
         # Create input-target pairs for sequence learning
         # Input: all coordinates except the last one
@@ -723,7 +770,10 @@ class RunningRouteDataset(Dataset):
             'route_id': route_id,
             'input_lat': input_lat,
             'input_lon': input_lon,
-            'graph': graph  # Return the full graph
+            'subgraph': sub_graphs,
+            'graph' : graph,
+            'nearest_nodes': eval(row['nearest_nodes'])[:-1],
+            'bounds': row['bounds']  # Return the full graph
         }
     
 def create_consistent_graph_data(subgraph, center_node, node_feature_dim=6, edge_feature_dim=8):
@@ -918,8 +968,7 @@ class ConditionEncoder(nn.Module):
         return self.encoder(x)
 
 # Define this outside of any class, at the module level
-@functools.lru_cache(maxsize=1000000)  # Adjust maxsize based on expected unique nodes
-def process_node_with_cache(node_id, graph_id, graph):  
+def process_node(node_id, graph):  
                 
     # Create subgraph
     subgraph = nx.ego_graph(graph, node_id, radius=2)
@@ -1345,15 +1394,12 @@ class GraphAwareRouteGenerator(nn.Module):
         input_lon = batch_data['input_lon']
         conditions = batch_data['conditions'].to(device)
         steps_remaining = batch_data['steps_remaining'].to(device)
-        graph = batch_data['graph']
+        subgraphs = batch_data['subgraph']
 
-        
-        # Prepare graph batch
-        # graph_batch = self.prepare_graph_batch(graph, input_lat, input_lon, device)
-        graph_batch = self.prepare_graph_batch_cached_parallel(graph, input_lat, input_lon, device)
-        # graph_batch = Batch.from_data_list(graph_batch).to(device)
-        # print(graph_batch.shape)
-        
+        subgraphs = [sub for graph in subgraphs for sub in graph]
+
+        graph_batch = Batch.from_data_list(subgraphs).to(device)
+
         # Encode graph features
         graph_features = self.graph_encoder(graph_batch)
         
@@ -1400,7 +1446,7 @@ class GraphAwareRouteGenerator(nn.Module):
         return predicted_coords
     
     def generate_route(self, graph, start_lat, start_lon, end_lat, end_lon, 
-                       distance, max_length=500, device='cpu'):
+                       distance, nearest_nodes, subgraphs, max_length=500, device='cpu'):
         """
         Generate a complete route autoregressively
         
@@ -1417,8 +1463,8 @@ class GraphAwareRouteGenerator(nn.Module):
         """
         with torch.no_grad():
             # Convert start and end points to graph coordinates
-            start_node = lat_lon_to_graph_point(start_lat, start_lon, graph)
-            end_node = lat_lon_to_graph_point(end_lat, end_lon, graph)
+            # start_node = lat_lon_to_graph_point(start_lat, start_lon, graph)
+            # end_node = lat_lon_to_graph_point(end_lat, end_lon, graph)
             
             # Initialize the route with the start point
             start_point = torch.tensor([[start_lat, start_lon]], dtype=torch.float32, device=device)
@@ -1447,14 +1493,10 @@ class GraphAwareRouteGenerator(nn.Module):
                 )
                 
                 # Get the subgraph around current point
-                center_node = lat_lon_to_graph_point(current_lat_lon[0, 0], current_lat_lon[0, 1], graph)
-                subgraph = get_subgraph_around_point(graph, center_node, n_hops=self.n_hops)
+                # center_node = lat_lon_to_graph_point(current_lat_lon[0, 0], current_lat_lon[0, 1], graph)
+                # subgraph = get_subgraph_around_point(graph, center_node, n_hops=self.n_hops)
                 
-                # Convert to PyTorch Geometric format
-                graph_data = RunningRouteDataset.convert_subgraph_to_pytorch_geometric(
-                    None, subgraph, center_node
-                )
-                graph_data = graph_data.to(device)
+                graph_data = subgraphs[step].to(device)
                 
                 # Encode the graph
                 graph_features = self.graph_encoder(Batch.from_data_list([graph_data]))
@@ -1524,11 +1566,13 @@ def create_padded_batch(batch_data):
     padded_input_seq = torch.zeros(batch_size, max_seq_len-1, 2)
     padded_target_seq = torch.zeros(batch_size, max_seq_len-1, 2)
     padded_steps_remaining = torch.zeros(batch_size, max_seq_len-1)
+
+
     
     # Input latitude and longitude for graph processing
     input_lat = []
     input_lon = []
-    graph = []
+    subgraphs = []
     
     for i, data in enumerate(batch_data):
         seq_len = data['seq_length']
@@ -1539,7 +1583,8 @@ def create_padded_batch(batch_data):
         
         input_lat.append(data['input_lat'])
         input_lon.append(data['input_lon'])
-        graph.append(data['graph'])
+        subgraphs.append(data['subgraph'])
+        # graph.append(data['graph'])
     
     batch_dict.update({
         'input_seq': padded_input_seq,
@@ -1547,7 +1592,7 @@ def create_padded_batch(batch_data):
         'steps_remaining': padded_steps_remaining,
         'input_lat': input_lat,
         'input_lon': input_lon,
-        'graph': graph  # Keep all graphs in the batch
+        'subgraph': subgraphs  # Keep all graphs in the batch
     })
     
     return batch_dict
@@ -1557,7 +1602,8 @@ class RouteModelTrainer:
     """Class to handle training and evaluation of the route model"""
     def __init__(self, model, train_loader, val_loader=None, 
                  lr=0.001, weight_decay=1e-5, device='mps', 
-                 disable_graph=False, verbose = True):
+                 disable_graph=False, verbose=True, 
+                 tensorboard_log_dir=None):
         """
         Initialize the trainer
         
@@ -1569,6 +1615,8 @@ class RouteModelTrainer:
             weight_decay: Weight decay for regularization
             device: Device to use for training
             disable_graph: Whether to disable graph encoding
+            verbose: Whether to print verbose output
+            tensorboard_log_dir: Directory for TensorBoard logs (if None, TensorBoard logging is disabled)
         """
         self.model = model
         self.train_loader = train_loader
@@ -1578,12 +1626,23 @@ class RouteModelTrainer:
         self.disable_graph = disable_graph
         self.verbose = verbose
         
+        # TensorBoard setup
+        self.tensorboard_writer = None
+        if tensorboard_log_dir:
+            try:
+                from torch.utils.tensorboard import SummaryWriter
+                self.tensorboard_writer = SummaryWriter(log_dir=tensorboard_log_dir)
+                print(f"TensorBoard logging enabled. Log directory: {tensorboard_log_dir}")
+            except ImportError:
+                print("Warning: TensorBoard not available. Install with 'pip install tensorboard'")
+        
         # Print training configuration
         print(f"Training configuration:")
         print(f"  - Device: {device}")
         print(f"  - Learning rate: {lr}")
         print(f"  - Weight decay: {weight_decay}")
         print(f"  - Graph encoding: {'Disabled' if disable_graph else 'Enabled'}")
+        print(f"  - TensorBoard: {'Enabled' if self.tensorboard_writer else 'Disabled'}")
         
         # Define optimizer
         self.optimizer = torch.optim.Adam(
@@ -1600,94 +1659,7 @@ class RouteModelTrainer:
             patience=5,
             verbose=True
         )
-        
-    # def train_epoch(self):
-    #     """Train the model for one epoch"""
-    #     self.model.train()
-    #     total_loss = 0
-    #     n_batches = 0
-    #     error_count = 0
-        
-    #     # Use tqdm for progress bar
-    #     pbar = tqdm(self.train_loader)
-    #     for batch_data in pbar:
-    #         try:
-    #             # Create padded batch
-    #             batch = create_padded_batch(batch_data)
-                
-    #             # Zero the gradients
-    #             self.optimizer.zero_grad()
-                
-    #             # Forward pass with graph encoding disabled if specified
-    #             predicted_coords = self.model(batch)
-                
-    #             # Calculate loss
-    #             loss = self.compute_loss(predicted_coords, batch['target_seq'].to(self.device))
-                
-    #             # Backward pass and optimize
-    #             loss.backward()
-                
-    #             # Gradient clipping to prevent exploding gradients
-    #             torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
-                
-    #             self.optimizer.step()
-                
-    #             # Track statistics
-    #             total_loss += loss.item()
-    #             n_batches += 1
-                
-    #             # Update progress bar
-    #             pbar.set_description(f"Train Loss: {loss.item():.4f}")
-                
-    #         except Exception as e:
-    #             error_count += 1
-    #             print(f"Error processing batch: {e}")
-    #             if error_count > 5:  # Limit number of errors to display
-    #                 print("Too many errors, stopping epoch early")
-    #                 break
-        
-    #     if n_batches == 0:
-    #         return float('inf')  # Return infinity if no batches were processed successfully
-            
-    #     return total_loss / n_batches
-    
-    # def validate(self):
-    #     """Validate the model on the validation set"""
-    #     if self.val_loader is None:
-    #         return None
-            
-    #     self.model.eval()
-    #     total_loss = 0
-    #     n_batches = 0
-    #     error_count = 0
-        
-    #     with torch.no_grad():
-    #         for batch_data in tqdm(self.val_loader, desc="Validating"):
-    #             try:
-    #                 # Create padded batch
-    #                 batch = create_padded_batch(batch_data)
-                    
-    #                 # Forward pass with graph encoding disabled if specified
-    #                 predicted_coords = self.model(batch)
-                    
-    #                 # Calculate loss
-    #                 loss = self.compute_loss(predicted_coords, batch['target_seq'].to(self.device))
-                    
-    #                 # Track statistics
-    #                 total_loss += loss.item()
-    #                 n_batches += 1
-                    
-    #             except Exception as e:
-    #                 error_count += 1
-    #                 if error_count <= 3:  # Limit error messages
-    #                     print(f"Error during validation: {e}")
-        
-    #     if n_batches == 0:
-    #         print("No valid batches processed during validation")
-    #         return float('inf')  # Return infinity if no batches were processed successfully
-            
-    #     val_loss = total_loss / n_batches
-    #     return val_loss
+
     
     def compute_loss(self, predictions, targets):
         """
@@ -1699,9 +1671,13 @@ class RouteModelTrainer:
             
         Returns:
             loss: Combined loss value
+            loss_components: Dictionary with individual loss components
         """
         # MSE loss for coordinate prediction
         mse_loss = F.mse_loss(predictions, targets)
+        
+        # Initialize direction loss
+        direction_loss = 0.0
         
         # Additional term: encourage smooth routes by penalizing sudden changes in direction
         # Get vectors between consecutive predicted points
@@ -1725,34 +1701,41 @@ class RouteModelTrainer:
             
             # Combine the losses
             # You can adjust these weights based on your priorities
-            combined_loss = mse_loss + 0.2 * direction_loss
+            combined_loss = mse_loss + 4 * direction_loss
         else:
             combined_loss = mse_loss
         
-        return combined_loss
+        # Return the combined loss and individual components for logging
+        loss_components = {
+            'mse_loss': mse_loss.item(),
+            'direction_loss': direction_loss if isinstance(direction_loss, float) else direction_loss.item()
+        }
+        
+        return combined_loss, loss_components
     
-    def train_epoch(self):
-        """Train the model for one epoch with tensor shape checking"""
+    def train_epoch(self, epoch):
+        """
+        Train the model for one epoch with tensor shape checking
+        
+        Args:
+            epoch: Current epoch number (for TensorBoard logging)
+            
+        Returns:
+            avg_loss: Average loss for the epoch
+            avg_loss_components: Average loss components for the epoch
+        """
         self.model.train()
         total_loss = 0
+        total_loss_components = {'mse_loss': 0, 'direction_loss': 0}
         n_batches = 0
         error_count = 0
         
         # Use tqdm for progress bar
         pbar = tqdm(self.train_loader)
-        for batch_data in pbar:
+        for batch_idx, batch_data in enumerate(pbar):
             try:
                 # Create padded batch
                 batch = create_padded_batch(batch_data)
-                
-                # Add debugging code to check tensor shapes
-                # if self.verbose:
-                #     print(f"\nBatch shapes:")
-                #     for key, value in batch.items():
-                #         if isinstance(value, torch.Tensor):
-                #             print(f"  {key}: {value.shape}")
-                #         elif isinstance(value, list) and len(value) > 0:
-                #             print(f"  {key}: list with {len(value)} items")
                 
                 # Zero the gradients
                 self.optimizer.zero_grad()
@@ -1780,7 +1763,7 @@ class RouteModelTrainer:
                     targets = batch['target_seq'].to(self.device)
                 
                 # Calculate loss
-                loss = self.compute_loss(predicted_coords, targets)
+                loss, loss_components = self.compute_loss(predicted_coords, targets)
                 
                 # Backward pass and optimize
                 loss.backward()
@@ -1792,10 +1775,19 @@ class RouteModelTrainer:
                 
                 # Track statistics
                 total_loss += loss.item()
+                for key in loss_components:
+                    total_loss_components[key] += loss_components[key]
                 n_batches += 1
                 
                 # Update progress bar
-                pbar.set_description(f"Train Loss: {loss.item():.4f}")
+                pbar.set_description(f"Train Loss: {loss.item():.4f} (MSE: {loss_components['mse_loss']:.4f}, Direction: {loss_components['direction_loss']:.4f})")
+                
+                # Log to TensorBoard (every N batches)
+                if self.tensorboard_writer and batch_idx % 10 == 0:
+                    global_step = epoch * len(self.train_loader) + batch_idx
+                    self.tensorboard_writer.add_scalar('train/batch_loss', loss.item(), global_step)
+                    for key, value in loss_components.items():
+                        self.tensorboard_writer.add_scalar(f'train/batch_{key}', value, global_step)
                 
             except Exception as e:
                 error_count += 1
@@ -1809,18 +1801,38 @@ class RouteModelTrainer:
                     break
         
         if n_batches == 0:
-            return float('inf')  # Return infinity if no batches were processed successfully
+            return float('inf'), {k: float('inf') for k in total_loss_components}
+        
+        # Calculate average losses
+        avg_loss = total_loss / n_batches
+        avg_loss_components = {k: v / n_batches for k, v in total_loss_components.items()}
+        
+        # Log epoch-level metrics to TensorBoard
+        if self.tensorboard_writer:
+            self.tensorboard_writer.add_scalar('train/epoch_loss', avg_loss, epoch)
+            for key, value in avg_loss_components.items():
+                self.tensorboard_writer.add_scalar(f'train/epoch_{key}', value, epoch)
             
-        return total_loss / n_batches
+        return avg_loss, avg_loss_components
 
 
-    def validate(self):
-        """Validate the model on the validation set with tensor shape checking"""
+    def validate(self, epoch):
+        """
+        Validate the model on the validation set with tensor shape checking
+        
+        Args:
+            epoch: Current epoch number (for TensorBoard logging)
+            
+        Returns:
+            avg_loss: Average loss for the epoch
+            avg_loss_components: Average loss components for the epoch
+        """
         if self.val_loader is None:
-            return None
+            return None, None
             
         self.model.eval()
         total_loss = 0
+        total_loss_components = {'mse_loss': 0, 'direction_loss': 0}
         n_batches = 0
         error_count = 0
         
@@ -1849,10 +1861,12 @@ class RouteModelTrainer:
                         targets = batch['target_seq'].to(self.device)
                     
                     # Calculate loss
-                    loss = self.compute_loss(predicted_coords, targets)
+                    loss, loss_components = self.compute_loss(predicted_coords, targets)
                     
                     # Track statistics
                     total_loss += loss.item()
+                    for key in loss_components:
+                        total_loss_components[key] += loss_components[key]
                     n_batches += 1
                     
                 except Exception as e:
@@ -1864,13 +1878,22 @@ class RouteModelTrainer:
         
         if n_batches == 0:
             print("No valid batches processed during validation")
-            return float('inf')  # Return infinity if no batches were processed successfully
+            return float('inf'), {k: float('inf') for k in total_loss_components}
             
-        val_loss = total_loss / n_batches
-        return val_loss
-
+        # Calculate average losses
+        avg_loss = total_loss / n_batches
+        avg_loss_components = {k: v / n_batches for k, v in total_loss_components.items()}
+        
+        # Log to TensorBoard
+        if self.tensorboard_writer:
+            self.tensorboard_writer.add_scalar('val/epoch_loss', avg_loss, epoch)
+            for key, value in avg_loss_components.items():
+                self.tensorboard_writer.add_scalar(f'val/epoch_{key}', value, epoch)
+            
+        return avg_loss, avg_loss_components
+        
     def train(self, num_epochs, checkpoint_dir=None, initial_batch_size=None, 
-             max_batch_size=None, batch_increase_epochs=5):
+            max_batch_size=None, batch_increase_epochs=5, evaluator=None, test_dataset=None):
         """
         Train the model for multiple epochs
         
@@ -1880,6 +1903,8 @@ class RouteModelTrainer:
             initial_batch_size: Starting batch size (optional)
             max_batch_size: Maximum batch size to try (optional)
             batch_increase_epochs: Number of epochs before trying to increase batch size
+            evaluator: RouteEvaluator instance for visualization (optional)
+            test_dataset: Test dataset for visualization if evaluator is not provided (optional)
             
         Returns:
             train_losses: List of training losses per epoch
@@ -1893,21 +1918,31 @@ class RouteModelTrainer:
         current_batch_size = initial_batch_size
         batch_size_attempts = 0
         
+        # Create evaluator if not provided but test_dataset is available
+        if evaluator is None and test_dataset is not None:
+            evaluator = RouteEvaluator(self.model, test_dataset, device=self.device, disable_graph=self.disable_graph)
+            
         for epoch in range(num_epochs):
             print(f"\nEpoch {epoch+1}/{num_epochs}")
             
             # Train for one epoch
-            train_loss = self.train_epoch()
+            train_loss, train_loss_components = self.train_epoch(epoch)
             train_losses.append(train_loss)
             
             # Validate
-            val_loss = self.validate()
+            val_loss, val_loss_components = self.validate(epoch)
             if val_loss is not None:
                 val_losses.append(val_loss)
-                print(f"Epoch {epoch+1} - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+                print(f"Epoch {epoch+1} - Train Loss: {train_loss:.4f} (MSE: {train_loss_components['mse_loss']:.4f}, Direction: {train_loss_components['direction_loss']:.4f}), "
+                      f"Val Loss: {val_loss:.4f} (MSE: {val_loss_components['mse_loss']:.4f}, Direction: {val_loss_components['direction_loss']:.4f})")
                 
                 # Update learning rate scheduler
                 self.scheduler.step(val_loss)
+                
+                # Log learning rate to TensorBoard
+                if self.tensorboard_writer:
+                    current_lr = self.optimizer.param_groups[0]['lr']
+                    self.tensorboard_writer.add_scalar('train/learning_rate', current_lr, epoch)
                 
                 # Save checkpoint if this is the best model so far
                 if checkpoint_dir and val_loss < best_val_loss:
@@ -1921,7 +1956,7 @@ class RouteModelTrainer:
                     }, os.path.join(checkpoint_dir, f'best_model.pt'))
                     print(f"✓ Saved best model with validation loss: {val_loss:.4f}")
             else:
-                print(f"Epoch {epoch+1} - Train Loss: {train_loss:.4f}")
+                print(f"Epoch {epoch+1} - Train Loss: {train_loss:.4f} (MSE: {train_loss_components['mse_loss']:.4f}, Direction: {train_loss_components['direction_loss']:.4f})")
             
             # Try increasing batch size if conditions are met
             if (initial_batch_size is not None and max_batch_size is not None and
@@ -1941,6 +1976,10 @@ class RouteModelTrainer:
                         self.val_loader.batch_size = new_batch_size
                     
                     current_batch_size = new_batch_size
+                    
+                    # Log batch size change to TensorBoard
+                    if self.tensorboard_writer:
+                        self.tensorboard_writer.add_scalar('train/batch_size', current_batch_size, epoch)
             
             # Save checkpoint every N epochs
             if checkpoint_dir and (epoch + 1) % 5 == 0:
@@ -1953,28 +1992,87 @@ class RouteModelTrainer:
                     'disable_graph': self.disable_graph,
                 }, os.path.join(checkpoint_dir, f'model_epoch_{epoch+1}.pt'))
 
-            viz_path = os.path.join(checkpoint_dir, f'route_comparison_{epoch}.png')
-            # visualize route comparison
-            fig  = self.model.visualize_route_comparison(0, save_path=viz_path)
+            # Visualize 4 route comparisons using the evaluator
+            if checkpoint_dir and evaluator:
+                print(f"Visualizing 4 route examples for epoch {epoch+1}...")
+                
+                # Make sure the model in the evaluator is updated with the current model weights
+                evaluator.model.load_state_dict(self.model.state_dict())
+                
+                # Log model graph to TensorBoard (only once)
+                if self.tensorboard_writer and epoch == 0:
+                    try:
+                        # Try to log model architecture if possible
+                        # This might fail depending on the model structure
+                        dummy_input = torch.zeros(1, 10, 2).to(self.device)  # Adjust shape as needed
+                        self.tensorboard_writer.add_graph(self.model, dummy_input)
+                    except:
+                        print("Could not log model graph to TensorBoard")
+                
+                # Visualize 4 examples
+                for i in range(4):
+                    viz_path = os.path.join(checkpoint_dir, f'route_comparison_epoch{epoch}_example{i}.png')
+                    try:
+                        # Visualize route comparison using the evaluator
+                        fig = evaluator.visualize_route_comparison(i, save_path=viz_path)
+                        
+                        # Log figure to TensorBoard
+                        if self.tensorboard_writer:
+                            self.tensorboard_writer.add_figure(
+                                f'evaluation/route_example_{i}', 
+                                fig,
+                                global_step=epoch
+                            )
+                        
+                        plt.close(fig)  # Close the figure to free memory
+                    except Exception as e:
+                        print(f"Error visualizing example {i}: {e}")
+                
+                # Run evaluation metrics (if not too expensive)
+                try:
+                    eval_metrics = evaluator.evaluate_generated_routes(num_samples=min(20, len(evaluator.test_dataset)))
+                    print(f"Evaluation metrics - MSE: {eval_metrics['mse']:.4f}, Distance Error: {eval_metrics['distance_error']:.2f}, End Point Error: {eval_metrics['end_point_error']:.4f}")
+                    
+                    # Log eval metrics to TensorBoard
+                    if self.tensorboard_writer:
+                        for key, value in eval_metrics.items():
+                            self.tensorboard_writer.add_scalar(f'evaluation/{key}', value, epoch)
+                except Exception as e:
+                    print(f"Error during evaluation: {e}")
             
-
+            # For backward compatibility, use model's visualize_route_comparison if it exists and no evaluator provided
+            elif checkpoint_dir and hasattr(self.model, 'visualize_route_comparison'):
+                viz_path = os.path.join(checkpoint_dir, f'route_comparison_{epoch}.png')
+                # visualize route comparison
+                fig = self.model.visualize_route_comparison(0, save_path=viz_path)
+                
+                # Log figure to TensorBoard
+                if self.tensorboard_writer:
+                    self.tensorboard_writer.add_figure('evaluation/route_example', fig, global_step=epoch)
+        
+        # Close TensorBoard writer
+        if self.tensorboard_writer:
+            self.tensorboard_writer.close()
         
         return train_losses, val_losses
 
 
+# Modified RouteEvaluator to support TensorBoard logging
 class RouteEvaluator:
     """Class to evaluate the quality of generated routes"""
-    def __init__(self, model, test_dataset, device='mps', disable_graph=False):
+    def __init__(self, model, test_dataset, device='mps', disable_graph=False, tensorboard_writer=None):
         self.model = model
         self.test_dataset = test_dataset
         self.device = device
         self.disable_graph = disable_graph
+        self.tensorboard_writer = tensorboard_writer
         self.model.to(device)
         
         print(f"Evaluator initialized with:")
         print(f"  - Device: {device}")
         print(f"  - Graph encoding: {'Disabled' if disable_graph else 'Enabled'}")
         print(f"  - Test dataset size: {len(test_dataset)}")
+        print(f"  - TensorBoard: {'Enabled' if tensorboard_writer else 'Disabled'}")
     
     def evaluate_generated_routes(self, num_samples=10):
         """
@@ -1993,6 +2091,7 @@ class RouteEvaluator:
             'end_point_error': []
         }
         
+        route_details = []  # Store details for potential logging
         successful_samples = 0
         errors = 0
         
@@ -2016,6 +2115,8 @@ class RouteEvaluator:
                         start_lat, start_lon,
                         end_lat, end_lon,
                         target_distance,
+                        sample['nearest_nodes'],
+                        sample['subgraph'],
                         device=self.device,
                     ).cpu().numpy()
                     
@@ -2023,8 +2124,8 @@ class RouteEvaluator:
                     mse = np.mean((generated_route - route_xy)**2)
                     
                     # Calculate actual distances
-                    actual_distance = total_route_distance(route_xy)
-                    generated_distance = total_route_distance(generated_route)
+                    actual_distance = get_route_distance(list(route_xy[:,0]), list(route_xy[:,1]))
+                    generated_distance = get_route_distance(list(generated_route[:,0]), list(generated_route[:,1]))
                     
                     if actual_distance > 0:
                         distance_error = abs(generated_distance - actual_distance) / actual_distance
@@ -2042,6 +2143,17 @@ class RouteEvaluator:
                     metrics['distance_error'].append(distance_error)
                     metrics['end_point_error'].append(end_point_error)
                     
+                    # Store route details for potential logging
+                    route_details.append({
+                        'sample_idx': i,
+                        'mse': mse,
+                        'distance_error': distance_error,
+                        'end_point_error': end_point_error,
+                        'target_distance': target_distance,
+                        'actual_distance': actual_distance,
+                        'generated_distance': generated_distance
+                    })
+                    
                     # Update progress bar description
                     pbar.set_description(f"MSE: {mse:.4f}, Dist Err: {distance_error:.2f}")
                     
@@ -2058,6 +2170,37 @@ class RouteEvaluator:
         if successful_samples > 0:
             for key in metrics:
                 metrics[key] = np.mean(metrics[key])
+            
+            # Log histogram of metrics to TensorBoard if available
+            if self.tensorboard_writer:
+                # Extract individual metrics for histograms
+                mse_values = [detail['mse'] for detail in route_details]
+                distance_error_values = [detail['distance_error'] for detail in route_details]
+                end_point_error_values = [detail['end_point_error'] for detail in route_details]
+                
+                # Log histograms
+                self.tensorboard_writer.add_histogram('evaluation/mse_histogram', np.array(mse_values))
+                self.tensorboard_writer.add_histogram('evaluation/distance_error_histogram', np.array(distance_error_values))
+                self.tensorboard_writer.add_histogram('evaluation/end_point_error_histogram', np.array(end_point_error_values))
+                
+                # Create scatter plot of target vs. generated distance
+                try:
+                    import matplotlib.pyplot as plt
+                    fig, ax = plt.subplots(figsize=(8, 8))
+                    target_distances = [detail['target_distance'] for detail in route_details]
+                    generated_distances = [detail['generated_distance'] for detail in route_details]
+                    ax.scatter(target_distances, generated_distances, alpha=0.7)
+                    ax.plot([0, max(target_distances)], [0, max(target_distances)], 'r--')  # Ideal line
+                    ax.set_xlabel('Target Distance (km)')
+                    ax.set_ylabel('Generated Distance (km)')
+                    ax.set_title('Target vs. Generated Route Distances')
+                    ax.grid(True)
+                    
+                    # Add to TensorBoard
+                    self.tensorboard_writer.add_figure('evaluation/target_vs_generated_distance', fig)
+                    plt.close(fig)
+                except Exception as e:
+                    print(f"Error creating distance scatter plot: {e}")
         else:
             # Return NaN if no samples were processed successfully
             for key in metrics:
@@ -2076,7 +2219,6 @@ class RouteEvaluator:
         Returns:
             fig: matplotlib figure
         """
-        import matplotlib.pyplot as plt
         
         sample = self.test_dataset[idx]
         route_xy = sample['route'].numpy()
@@ -2085,7 +2227,7 @@ class RouteEvaluator:
         target_distance = sample['conditions'][0].item()
         
         # Calculate actual distance
-        actual_distance = total_route_distance(route_xy)
+        actual_distance = get_route_distance(list(route_xy[:,0]), list(route_xy[:,1]))
         
         # Generate route with graph encoding enabled/disabled as configured
         with torch.no_grad():
@@ -2094,11 +2236,13 @@ class RouteEvaluator:
                 start_lat, start_lon,
                 end_lat, end_lon,
                 target_distance,
+                sample['nearest_nodes'],
+                sample['subgraph'],
                 device=self.device,
             ).cpu().numpy()
         
         # Calculate generated distance
-        generated_distance = total_route_distance(generated_route)
+        generated_distance = get_route_distance(list(generated_route[:,0]), list(generated_route[:,1]))
         
         # Calculate distance error
         if actual_distance > 0:
@@ -2109,13 +2253,6 @@ class RouteEvaluator:
         # Create figure
         fig, ax = plt.subplots(figsize=(10, 10))
         
-        # Plot the routes
-        ax.plot(route_xy[:, 1], route_xy[:, 0], 'b-', linewidth=2, label='Ground Truth')
-        ax.plot(generated_route[:, 1], generated_route[:, 0], 'r-', linewidth=2, label='Generated')
-        
-        # Plot start and end points
-        ax.plot(start_lon, start_lat, 'go', markersize=10, label='Start')
-        ax.plot(end_lon, end_lat, 'mo', markersize=10, label='End')
         
         # Plot OSM basemap if osmnx is available and graphs are enabled
         if not self.disable_graph:
@@ -2126,6 +2263,14 @@ class RouteEvaluator:
                               edge_color='gray', edge_alpha=0.2, node_size=0)
             except Exception as e:
                 print(f"Warning: Could not plot graph background: {e}")
+
+        # Plot the routes
+        ax.plot(route_xy[:, 1], route_xy[:, 0], 'b-', linewidth=2, label='Ground Truth')
+        ax.plot(generated_route[:, 1], generated_route[:, 0], 'r-', linewidth=2, label='Generated')
+        
+        # Plot start and end points
+        ax.plot(start_lon, start_lat, 'go', markersize=10, label='Start')
+        ax.plot(end_lon, end_lat, 'mo', markersize=10, label='End')
         
         # Add legend and title
         ax.legend()
@@ -2149,6 +2294,12 @@ def identity_collate(x):
     return x
 
 def main():
+
+    default_device = (
+    'mps' if torch.backends.mps.is_available() 
+    else 'cuda' if torch.cuda.is_available() 
+    else 'cpu'
+    )
     # Set up command line arguments
     import argparse
     parser = argparse.ArgumentParser(description='Train running route prediction model')
@@ -2161,7 +2312,7 @@ def main():
     parser.add_argument('--hidden_dim', type=int, default=256, help='Hidden dimension size')
     parser.add_argument('--n_hops', type=int, default=2, help='Number of hops in the graph')
     parser.add_argument('--disable_graph', action='store_true', help='Disable graph encoder and use only coordinate data')
-    parser.add_argument('--device', type=str, default='mps', 
+    parser.add_argument('--device', type=str, default=default_device, 
                         help='Device to use for training')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     parser.add_argument('--eval_only', action='store_true', help='Only run evaluation')
@@ -2312,7 +2463,8 @@ def main():
         lr=args.learning_rate,
         device=args.device,
         disable_graph=args.disable_graph,
-        verbose=True
+        verbose=True,
+        tensorboard_log_dir=f'tensorboard_logs/{get_datetime_string()}'
     )
     
     # Print adaptive batch size settings if enabled
@@ -2329,7 +2481,6 @@ def main():
     )
     
     # Plot training and validation losses
-    import matplotlib.pyplot as plt
     plt.figure(figsize=(10, 5))
     plt.plot(train_losses, label='Train Loss')
     plt.plot(val_losses, label='Val Loss')
@@ -2369,13 +2520,12 @@ import os
 import torch
 import numpy as np
 from torch_geometric.data import Batch
-import matplotlib.pyplot as plt
 
 def profiler_main():
     """Profile the performance of the route prediction model for one training step"""
     # Set up minimal arguments for profiling
     class Args:
-        data_path = "data/processed_combined.csv"  # Replace with your actual path
+        data_path = "data/processed_for_graph.csv"  # Replace with your actual path
         batch_size = 4  # Small batch size for profiling
         hidden_dim = 256
         n_hops = 2
@@ -2475,9 +2625,9 @@ def profiler_main():
         device = args.device
         input_lat = batch_dict['input_lat']
         input_lon = batch_dict['input_lon']
-        graphs = batch_dict['graph']
+        subgraphs = batch_dict['subgraph']
         # graph_batch = model.prepare_graph_batch(graphs, input_lat, input_lon, device)
-        graph_batch = graphs
+        graph_batch = subgraphs
         graph_batch_time = time.time() - start_time
         print(f"Graph batch creation took {graph_batch_time:.2f} seconds")
         
