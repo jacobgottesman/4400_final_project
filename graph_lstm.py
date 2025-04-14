@@ -12,6 +12,7 @@ from torch_geometric.nn import GCNConv, global_mean_pool
 from torch_geometric.data import Data, Batch
 import torch.nn.functional as F
 from tqdm import tqdm
+import functools
 import multiprocessing
 import traceback
 
@@ -916,7 +917,71 @@ class ConditionEncoder(nn.Module):
     def forward(self, x):
         return self.encoder(x)
 
-
+# Define this outside of any class, at the module level
+@functools.lru_cache(maxsize=1000000)  # Adjust maxsize based on expected unique nodes
+def process_node_with_cache(node_id, graph_id, graph):  
+                
+    # Create subgraph
+    subgraph = nx.ego_graph(graph, node_id, radius=2)
+    
+    # Create node features
+    num_nodes = len(subgraph.nodes())
+    x = torch.zeros((num_nodes, 4), dtype=torch.float32)
+    
+    # Create node mapping for the subgraph
+    node_map = {node: idx for idx, node in enumerate(subgraph.nodes())}
+    
+    # Add node features
+    for i, (id, node_data) in enumerate(subgraph.nodes(data=True)):
+        if 'pos' in node_data:
+            x[i, 0:2] = torch.tensor(node_data['pos'], dtype=torch.float32)
+        if id == node_id:
+            x[i, 2] = 1.0  # Center node indicator
+        if 'highway' in node_data:
+            x[i, 3] = 1.0
+    
+    # Process edges
+    edge_indices = []
+    edge_attrs = []
+    
+    for u, v, data in subgraph.edges(data=True):
+        if u in node_map and v in node_map:
+            src_idx = node_map[u]
+            dst_idx = node_map[v]
+            
+            # Add bidirectional edges
+            edge_indices.append([src_idx, dst_idx])
+            edge_indices.append([dst_idx, src_idx])
+            
+            # Create edge attributes
+            edge_attr = torch.zeros(5, dtype=torch.float32)
+            
+            if 'length' in data:
+                edge_attr[0] = data['length']
+            if 'grade' in data:
+                edge_attr[1] = data['grade']
+            if 'highway' in data:
+                edge_attr[2] = 1.0
+            if 'oneway' in data and data['oneway']:
+                edge_attr[3] = 1.0
+            if 'weight' in data:
+                edge_attr[4] = data['weight']
+            
+            edge_attrs.append(edge_attr)
+            edge_attrs.append(edge_attr.clone())
+    
+    # Convert to tensors
+    if edge_indices:
+        edge_index = torch.tensor(edge_indices, dtype=torch.long).t()
+        edge_attr = torch.stack(edge_attrs)
+    else:
+        edge_index = torch.zeros((2, 0), dtype=torch.long)
+        edge_attr = torch.zeros((0, 5), dtype=torch.float32)
+    
+    # Create data object
+    graph_data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+    return graph_data
+    
 class ImprovedRoutePredictor(nn.Module):
     """LSTM model for predicting the next coordinate based on previous coordinates
     and graph features"""
@@ -979,93 +1044,12 @@ class ImprovedRoutePredictor(nn.Module):
         
         return next_coords, hidden
 
-# Define this outside of any class, at the module level
-def process_single_coord_worker(args):
-    """Standalone worker function that can be pickled"""
-    import torch
-    import networkx as nx
-    import osmnx as ox
-    from torch_geometric.data import Data
-    
-    idx, lat, lon, graph = args
-    
-    try:
-        # Get center node
-        node_id = ox.distance.nearest_nodes(graph, lon, lat)
+
         
-        # Create subgraph
-        subgraph = nx.ego_graph(graph, node_id, radius=2)
-        
-        # Create node features
-        num_nodes = len(subgraph.nodes())
-        x = torch.zeros((num_nodes, 4), dtype=torch.float32)
-        
-        # Create node mapping for the subgraph
-        node_map = {node: idx for idx, node in enumerate(subgraph.nodes())}
-        
-        # Add node features
-        for i, (id, node_data) in enumerate(subgraph.nodes(data=True)):
-            if 'pos' in node_data:
-                x[i, 0:2] = torch.tensor(node_data['pos'], dtype=torch.float32)
-            if id == node_id:
-                x[i, 2] = 1.0  # Center node indicator
-            if 'highway' in node_data:
-                x[i, 3] = 1.0
-        
-        # Process edges
-        edge_indices = []
-        edge_attrs = []
-        
-        for u, v, data in subgraph.edges(data=True):
-            if u in node_map and v in node_map:
-                src_idx = node_map[u]
-                dst_idx = node_map[v]
-                
-                # Add bidirectional edges
-                edge_indices.append([src_idx, dst_idx])
-                edge_indices.append([dst_idx, src_idx])
-                
-                # Create edge attributes
-                edge_attr = torch.zeros(5, dtype=torch.float32)
-                
-                if 'length' in data:
-                    edge_attr[0] = data['length']
-                if 'grade' in data:
-                    edge_attr[1] = data['grade']
-                if 'highway' in data:
-                    edge_attr[2] = 1.0
-                if 'oneway' in data and data['oneway']:
-                    edge_attr[3] = 1.0
-                if 'weight' in data:
-                    edge_attr[4] = data['weight']
-                
-                edge_attrs.append(edge_attr)
-                edge_attrs.append(edge_attr.clone())
-        
-        # Convert to tensors
-        if edge_indices:
-            edge_index = torch.tensor(edge_indices, dtype=torch.long).t()
-            edge_attr = torch.stack(edge_attrs)
-        else:
-            edge_index = torch.zeros((2, 0), dtype=torch.long)
-            edge_attr = torch.zeros((0, 5), dtype=torch.float32)
-        
-        # Create data object
-        graph_data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
-        return idx, graph_data
-    
-    except Exception as e:
-        # Create an empty graph on error
-        print(f"Error processing node {idx}: {e}")
-        empty_x = torch.zeros((1, 4), dtype=torch.float32)
-        empty_edge_index = torch.zeros((2, 0), dtype=torch.long)
-        empty_edge_attr = torch.zeros((0, 5), dtype=torch.float32)
-        return idx, Data(x=empty_x, edge_index=empty_edge_index, edge_attr=empty_edge_attr)
-    
 class GraphAwareRouteGenerator(nn.Module):
     """Enhanced model with graph awareness and steps remaining information"""
     def __init__(self, graph_feature_dim=256, condition_dim=64, hidden_dim=256, 
-                 num_layers=2, n_hops=2):
+                num_layers=2, n_hops=2):
         super(GraphAwareRouteGenerator, self).__init__()
         
         self.graph_feature_dim = graph_feature_dim
@@ -1093,28 +1077,118 @@ class GraphAwareRouteGenerator(nn.Module):
             num_layers=num_layers
         )
 
-
-
-    # Then modify your class method to use this function
-    def prepare_graph_batch_simple_parallel(self, graphs, lat_coords, lon_coords, device, num_workers=30):
+    def prepare_graph_batch_simple(self, graphs, lat_coords, lon_coords, device):
         """
-        Parallel implementation of graph batch preparation
+        Simplified graph batch preparation that processes each graph once
+        without subgraph extraction or error handling
         """
-        import concurrent.futures
-        import torch
-        from torch_geometric.data import Batch
+        batch_size = len(lat_coords)
+        processed_graphs = []
         
+        for b in range(batch_size):
+            graph = graphs[b]
+
+            for lat, lon in zip(lat_coords[b], lon_coords[b]):
+                # Get the center node ID
+                node_id = ox.distance.nearest_nodes(graph, lon, lat)
+                
+                # Create subgraph - note: node_id is used directly, not graph.nodes[node_id]
+                subgraph = nx.ego_graph(graph, node_id, radius=2)
+
+                # Create single node feature tensor for all nodes
+                num_nodes = len(subgraph.nodes())
+                x = torch.zeros((num_nodes, 4), dtype=torch.float32)
+                
+                # Create node mapping for the SUBGRAPH (not the original graph)
+                node_map = {node: idx for idx, node in enumerate(subgraph.nodes())}
+                
+                # Add basic node features
+                for i, (id, node_data) in enumerate(subgraph.nodes(data=True)):
+                    if 'pos' in node_data:
+                        x[i, 0:2] = torch.tensor(node_data['pos'], dtype=torch.float32)
+                    if id == node_id:
+                        x[i, 2] = 1.0  # Center node indicator
+                    if 'highway' in node_data:
+                        x[i, 3] = 1.0
+                
+                # Process edges
+                edge_indices = []
+                edge_attrs = []
+                
+                for u, v, data in subgraph.edges(data=True):
+                    # Use the subgraph node mapping
+                    src_idx = node_map[u]
+                    dst_idx = node_map[v]
+                    
+                    # Add bidirectional edges
+                    edge_indices.append([src_idx, dst_idx])
+                    edge_indices.append([dst_idx, src_idx])
+                    
+                    # Create edge attributes
+                    edge_attr = torch.zeros(5, dtype=torch.float32)
+                    
+                    # Add real edge features
+                    if 'length' in data:
+                        edge_attr[0] = data['length']
+                    if 'grade' in data:
+                        edge_attr[1] = data['grade']
+                    if 'highway' in data:
+                        edge_attr[2] = 1.0
+                    if 'oneway' in data and data['oneway']:
+                        edge_attr[3] = 1.0
+                    if 'weight' in data:
+                        edge_attr[4] = data['weight']
+                        
+                    # Add same attributes for both directions
+                    edge_attrs.append(edge_attr)
+                    edge_attrs.append(edge_attr.clone())
+            
+                # Convert to tensors
+                if edge_indices:
+                    edge_index = torch.tensor(edge_indices, dtype=torch.long).t()
+                    edge_attr = torch.stack(edge_attrs)
+                else:
+                    # Handle empty case
+                    edge_index = torch.zeros((2, 0), dtype=torch.long)
+                    edge_attr = torch.zeros((0, 5), dtype=torch.float32)
+                
+                graph_data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
+                processed_graphs.append(graph_data)
+        
+        # Create batch
+        graph_batch = Batch.from_data_list(processed_graphs).to(device)
+        return graph_batch
+
+    def prepare_graph_batch_cached_parallel(self, graphs, lat_coords, lon_coords, device, num_workers=50):
+        """Parallel implementation with caching of common nodes"""
         batch_size = len(lat_coords)
         tasks = []
         
-        # Prepare tasks for parallel processing
+        # First, find all nearest nodes to avoid redundant calculations
+        node_mapping = {}  # Maps (graph_idx, lat, lon) -> (node_id, graph_id)
+        graph_id_map = {}  # Store a unique ID for each graph object to use in caching
+        
         for b in range(batch_size):
             graph = graphs[b]
-            for i, (lat, lon) in enumerate(zip(lat_coords[b], lon_coords[b])):
-                # Create a unique index for this task
-                idx = len(tasks)
-                # Pass the full graph directly in the task
-                tasks.append((idx, lat, lon, graph))
+            
+            # Create a unique identifier for this graph
+            graph_id = id(graph)  # Using object id as identifier
+            graph_id_map[graph_id] = graph
+            
+            # First, find all nearest nodes for this graph in one batch if possible
+            coords = [(lat, lon) for lat, lon in zip(lat_coords[b], lon_coords[b])]
+            
+            # You could potentially do this in parallel too, but often OSMnx has
+            # batch operations that are more efficient
+            for i, (lat, lon) in enumerate(coords):
+                node_id = ox.distance.nearest_nodes(graph, lon, lat)
+                node_mapping[(b, i)] = (node_id, graph_id)
+        
+        # Second, create processing tasks with unique node information
+        for (b, i), (node_id, graph_id) in node_mapping.items():
+            # Create a unique index for this task
+            idx = len(tasks)
+            tasks.append((idx, node_id, graph_id, b, i))
         
         # Process in parallel
         processed_graphs = [None] * len(tasks)
@@ -1122,16 +1196,14 @@ class GraphAwareRouteGenerator(nn.Module):
         # Use fewer workers if there are few tasks
         actual_workers = min(num_workers, max(1, len(tasks)))
         
-        try:
-            with concurrent.futures.ProcessPoolExecutor(max_workers=actual_workers) as executor:
-                # Use the standalone function defined at module level
-                for idx, graph_data in executor.map(process_single_coord_worker, tasks):
-                    processed_graphs[idx] = graph_data
-        except Exception as e:
-            print(f"Error in parallel processing: {e}")
-            # Fall back to sequential processing
-            for task in tasks:
-                idx, graph_data = process_single_coord_worker(task)
+        with ThreadPoolExecutor(max_workers=actual_workers) as executor:
+            def worker(args):
+                idx, node_id, graph_id, b, i = args
+                # Call the cached function
+                graph_data = process_node_with_cache(node_id, graph_id, graphs[b])
+                return idx, graph_data
+            
+            for idx, graph_data in executor.map(worker, tasks):
                 processed_graphs[idx] = graph_data
         
         # Move all graphs to the right device
@@ -1206,7 +1278,7 @@ class GraphAwareRouteGenerator(nn.Module):
         
         # Prepare graph batch
         # graph_batch = self.prepare_graph_batch(graph, input_lat, input_lon, device)
-        graph_batch = self.prepare_graph_batch_simple_parallel(graph, input_lat, input_lon, device)
+        graph_batch = self.prepare_graph_batch_cached_parallel(graph, input_lat, input_lon, device)
         # graph_batch = Batch.from_data_list(graph_batch).to(device)
         # print(graph_batch.shape)
         
