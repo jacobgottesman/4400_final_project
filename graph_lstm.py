@@ -15,9 +15,29 @@ from tqdm import tqdm
 import functools
 import multiprocessing
 import traceback
-from utils.preprocessing import get_route_distance
+from utils.preprocessing import get_route_distance, haversine_distance
 import matplotlib.pyplot as plt
 import datetime
+
+
+def haversine_dist(point1, point2):
+    """
+    Calculate the haversine distance between two points in km
+    Points are in [lat, lon] format
+    """
+    # Convert decimal degrees to radians
+    lat1, lon1 = np.radians(point1)
+    lat2, lon2 = np.radians(point2)
+    
+    # Haversine formula
+    dlon = lon2 - lon1
+    dlat = lat2 - lat1
+    a = np.sin(dlat/2)**2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon/2)**2
+    c = 2 * np.arcsin(np.sqrt(a))
+    r = 6371  # Radius of earth in kilometers
+    
+    return c * r
+
 
 def get_datetime_string():
     from datetime import datetime
@@ -707,47 +727,12 @@ class RunningRouteDataset(Dataset):
 
         sub_graphs = [self.subgraph_mapping[node] for node in eval(row['nearest_nodes'])[:-1]]
         graph = self.get_graph_for_route(route_id, row['bounds'])
-
-        # closest_nodes = [ox.distance.nearest_nodes(graph, lat, lon) for lat, lon in zip(route_lat, route_lon)]
-
-        # nodes = set(closest_nodes)
-
-        # for node in nodes:
-        #     if self.subgraph_mapping.get(node, 0) != 0:
-        #         nodes.remove(node)
-
-        # nodes = list(nodes)        
-        # tasks = []
-
-            # Second, create processing tasks with unique node information
-        # for i, node in enumerate(nodes):
-        #     # Create a unique index for this task
-        #     tasks.append((idx, node))
-        
-        # Process in parallel
-        # processed_graphs = [None] * len(tasks)
-        
-        # Use fewer workers if there are few tasks
-        # actual_workers = min(self.num_workers, max(1, len(tasks)))
-        
-        # with ThreadPoolExecutor(max_workers=actual_workers) as executor:
-        #     def worker(args):
-        #         idx, node_id = args
-        #         # Call the cached function
-        #         graph_data = process_node(node_id, graph)
-        #         self.subgraph_mapping[node_id] = graph_data
-        #         return idx, graph_data
-            
-        #     for i, (task_idx, graph_data) in enumerate(executor.map(worker, tasks)):
-        #         processed_graphs[i] = graph_data 
-
-        # sub_graphs = [self.subgraph_mapping[i].to(self.device) for i in closest_nodes]
         
         # Create input-target pairs for sequence learning
         # Input: all coordinates except the last one
         # Target: all coordinates except the first one
-        input_seq = route_tensor[:-1]
-        target_seq = route_tensor[1:]
+        input_seq = route_tensor[:-1]  # Keep the same input sequence
+        delta_target_seq = route_tensor[1:] - route_tensor[:-1]
         
         # Calculate steps remaining for each position in the sequence
         seq_length = len(route_xy)
@@ -763,7 +748,7 @@ class RunningRouteDataset(Dataset):
         return {
             'route': route_tensor,
             'input_seq': input_seq,
-            'target_seq': target_seq,
+            'target_seq': delta_target_seq,
             'conditions': torch.cat([distance, start_point, end_point], dim=0),
             'seq_length': seq_length,
             'steps_remaining': steps_remaining,
@@ -1060,7 +1045,10 @@ class ImprovedRoutePredictor(nn.Module):
         )
         
         # Final coordinate prediction layer
-        self.output_layer = nn.Linear(64, 2)
+
+        self.output_layer = nn.Sequential(
+            nn.Linear(64, 2),
+            nn.Tanh())
     
     def forward(self, coords, graph_features, condition_features, hidden=None):
         """
@@ -1126,265 +1114,6 @@ class GraphAwareRouteGenerator(nn.Module):
             num_layers=num_layers
         )
 
-    def prepare_graph_batch_simple(self, graphs, lat_coords, lon_coords, device):
-        """
-        Simplified graph batch preparation that processes each graph once
-        without subgraph extraction or error handling
-        """
-        batch_size = len(lat_coords)
-        processed_graphs = []
-        
-        for b in range(batch_size):
-            graph = graphs[b]
-
-            for lat, lon in zip(lat_coords[b], lon_coords[b]):
-                # Get the center node ID
-                node_id = ox.distance.nearest_nodes(graph, lon, lat)
-                
-                # Create subgraph - note: node_id is used directly, not graph.nodes[node_id]
-                subgraph = nx.ego_graph(graph, node_id, radius=2)
-
-                # Create single node feature tensor for all nodes
-                num_nodes = len(subgraph.nodes())
-                x = torch.zeros((num_nodes, 4), dtype=torch.float32)
-                
-                # Create node mapping for the SUBGRAPH (not the original graph)
-                node_map = {node: idx for idx, node in enumerate(subgraph.nodes())}
-                
-                # Add basic node features
-                for i, (id, node_data) in enumerate(subgraph.nodes(data=True)):
-                    if 'pos' in node_data:
-                        x[i, 0:2] = torch.tensor(node_data['pos'], dtype=torch.float32)
-                    if id == node_id:
-                        x[i, 2] = 1.0  # Center node indicator
-                    if 'highway' in node_data:
-                        x[i, 3] = 1.0
-                
-                # Process edges
-                edge_indices = []
-                edge_attrs = []
-                
-                for u, v, data in subgraph.edges(data=True):
-                    # Use the subgraph node mapping
-                    src_idx = node_map[u]
-                    dst_idx = node_map[v]
-                    
-                    # Add bidirectional edges
-                    edge_indices.append([src_idx, dst_idx])
-                    edge_indices.append([dst_idx, src_idx])
-                    
-                    # Create edge attributes
-                    edge_attr = torch.zeros(5, dtype=torch.float32)
-                    
-                    # Add real edge features
-                    if 'length' in data:
-                        edge_attr[0] = data['length']
-                    if 'grade' in data:
-                        edge_attr[1] = data['grade']
-                    if 'highway' in data:
-                        edge_attr[2] = 1.0
-                    if 'oneway' in data and data['oneway']:
-                        edge_attr[3] = 1.0
-                    if 'weight' in data:
-                        edge_attr[4] = data['weight']
-                        
-                    # Add same attributes for both directions
-                    edge_attrs.append(edge_attr)
-                    edge_attrs.append(edge_attr.clone())
-            
-                # Convert to tensors
-                if edge_indices:
-                    edge_index = torch.tensor(edge_indices, dtype=torch.long).t()
-                    edge_attr = torch.stack(edge_attrs)
-                else:
-                    # Handle empty case
-                    edge_index = torch.zeros((2, 0), dtype=torch.long)
-                    edge_attr = torch.zeros((0, 5), dtype=torch.float32)
-                
-                graph_data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
-                processed_graphs.append(graph_data)
-        
-        # Create batch
-        graph_batch = Batch.from_data_list(processed_graphs).to(device)
-        return graph_batch
-
-    def prepare_graph_batch_cached_parallel(self, graphs, lat_coords, lon_coords, device, num_workers=50):
-        """Parallel implementation with caching of common nodes"""
-        batch_size = len(lat_coords)
-        tasks = []
-        
-        # First, find all nearest nodes to avoid redundant calculations
-        node_mapping = {}  # Maps (graph_idx, lat, lon) -> (node_id, graph_id)
-        graph_id_map = {}  # Store a unique ID for each graph object to use in caching
-        
-        for b in range(batch_size):
-            graph = graphs[b]
-            
-            # Create a unique identifier for this graph
-            graph_id = id(graph)  # Using object id as identifier
-            graph_id_map[graph_id] = graph
-            
-            # First, find all nearest nodes for this graph in one batch if possible
-            coords = [(lat, lon) for lat, lon in zip(lat_coords[b], lon_coords[b])]
-            
-            # You could potentially do this in parallel too, but often OSMnx has
-            # batch operations that are more efficient
-            for i, (lat, lon) in enumerate(coords):
-                node_id = ox.distance.nearest_nodes(graph, lon, lat)
-                node_mapping[(b, i)] = (node_id, graph_id)
-        
-        # Second, create processing tasks with unique node information
-        for (b, i), (node_id, graph_id) in node_mapping.items():
-            # Create a unique index for this task
-            idx = len(tasks)
-            tasks.append((idx, node_id, graph_id, b, i))
-        
-        # Process in parallel
-        processed_graphs = [None] * len(tasks)
-        
-        # Use fewer workers if there are few tasks
-        actual_workers = min(num_workers, max(1, len(tasks)))
-        
-        with ThreadPoolExecutor(max_workers=actual_workers) as executor:
-            def worker(args):
-                idx, node_id, graph_id, b, i = args
-                # Call the cached function
-                graph_data = process_node_with_cache(node_id, graph_id, graphs[b])
-                return idx, graph_data
-            
-            for idx, graph_data in executor.map(worker, tasks):
-                processed_graphs[idx] = graph_data
-        
-        # Move all graphs to the right device
-        processed_graphs = [g.to(device) for g in processed_graphs]
-        
-        # Create batch
-        graph_batch = Batch.from_data_list(processed_graphs)
-        return graph_batch
-    
-    def prepare_graph_batch_simple_full_map(self, graphs, lat_coords, lon_coords, device):
-        """
-        Simplified graph batch preparation that processes each graph once
-        without subgraph extraction or error handling
-        """
-        batch_size = len(lat_coords)
-        processed_graphs = []
-        
-        for b in range(batch_size):
-            graph = graphs[b]
-            seq_len = len(lat_coords[b])
-            
-            # Create single node feature tensor for all nodes
-            num_nodes = len(graph.nodes())
-            x = torch.zeros((num_nodes, 6), dtype=torch.float32)
-            
-            # Add basic node features (could add real features here)
-            for i, (node_id, node_data) in enumerate(graph.nodes(data=True)):
-                if 'pos' in node_data:
-                    x[i, 0:2] = torch.tensor(node_data['pos'], dtype=torch.float32)
-                if 'elevation' in node_data:
-                    x[i, 2] = node_data['elevation']
-                if 'highway' in node_data:  # One-hot encoding for road type
-                    x[i, 3] = 1.0
-            
-            # Create node mapping
-            node_map = {node: idx for idx, node in enumerate(graph.nodes())}
-            
-            # Process edges to create edge_index and edge_attr tensors
-            num_edges = len(graph.edges())
-            edge_indices = []
-            edge_attrs = []
-            
-            for u, v, data in graph.edges(data=True):
-                # Convert to indices in our node mapping
-                src_idx = node_map[u]
-                dst_idx = node_map[v]
-                
-                # Add bidirectional edges
-                edge_indices.append([src_idx, dst_idx])
-                edge_indices.append([dst_idx, src_idx])
-                
-                # Create edge attributes
-                edge_attr = torch.zeros(8, dtype=torch.float32)
-                
-                # Add real edge features if available
-                if 'length' in data:
-                    edge_attr[0] = data['length']
-                if 'grade' in data:
-                    edge_attr[1] = data['grade']
-                if 'highway' in data:
-                    edge_attr[2] = 1.0
-                if 'oneway' in data and data['oneway']:
-                    edge_attr[3] = 1.0
-                    
-                # Add same attributes for both directions
-                edge_attrs.append(edge_attr)
-                edge_attrs.append(edge_attr.clone())
-            
-            # Convert to tensors
-            edge_index = torch.tensor(edge_indices, dtype=torch.long).t()
-            edge_attr = torch.stack(edge_attrs)
-            
-            # Create one graph object per sequence position
-            for s in range(seq_len):
-                graph_data = Data(x=x, edge_index=edge_index, edge_attr=edge_attr)
-                processed_graphs.append(graph_data)
-        
-        # Create batch
-        graph_batch = Batch.from_data_list(processed_graphs).to(device)
-        return graph_batch
-    
-    def prepare_graph_batch(self, graphs, lat_coords, lon_coords, device):
-        """Optimized graph batch creation with multi-level caching"""
-        batch_size = len(lat_coords)
-        subgraphs = []
-        
-        # Create cache if it doesn't exist
-        if not hasattr(self, 'subgraph_cache'):
-            self.subgraph_cache = {}
-        
-        for b in range(batch_size):
-            graph = graphs[b]
-            if graph is None or not isinstance(graph, nx.Graph):
-                # Add an empty graph and continue
-                subgraphs.append(create_empty_graph_data(6, 8).to(device))
-                continue
-                
-            seq_len = len(lat_coords[b]) if b < len(lat_coords) else 0
-            
-            for s in range(seq_len):
-                # Create a cache key based on coordinates (rounded to reduce variations)
-                lat = round(lat_coords[b][s], 5)
-                lon = round(lon_coords[b][s], 5)
-                cache_key = f"{id(graph)}_{lat}_{lon}"
-                
-                # Check if we've already processed this location
-                if cache_key in self.subgraph_cache:
-                    subgraphs.append(self.subgraph_cache[cache_key].clone().to(device))
-                    continue
-                    
-                try:
-                    # Process the subgraph as before
-                    center_node = lat_lon_to_graph_point(lat_coords[b][s], lon_coords[b][s], graph)
-                    subgraph = get_subgraph_around_point(graph, center_node, n_hops=self.n_hops)
-                    graph_data = create_consistent_graph_data(subgraph, center_node)
-                    
-                    # Store in cache (on CPU to save GPU memory)
-                    self.subgraph_cache[cache_key] = graph_data.to('cpu')
-                    
-                    # Add to current batch
-                    subgraphs.append(graph_data.to(device))
-                except Exception as e:
-                    # Add an empty graph on error
-                    subgraphs.append(create_empty_graph_data(6, 8).to(device))
-                    
-        # Clear cache if it gets too large (adjust threshold as needed)
-        if len(self.subgraph_cache) > 1000000:
-            self.subgraph_cache.clear()
-        
-        # Create batch with minimal error checking (we trust our cache)
-        return Batch.from_data_list(subgraphs)
-
     
     def prepare_batch_data(self, batch_data, device):
         """Prepare data for the forward pass during training"""
@@ -1399,14 +1128,9 @@ class GraphAwareRouteGenerator(nn.Module):
         subgraphs = [sub for graph in subgraphs for sub in graph]
 
         graph_batch = Batch.from_data_list(subgraphs).to(device)
-
-        # Encode graph features
-        graph_features = self.graph_encoder(graph_batch)
         
-        # Reshape to [batch_size, seq_len, feature_dim]
-        batch_size, seq_len = input_seq.shape[:2]
-        graph_features = graph_features.view(batch_size, seq_len, -1)
-        
+        batch_size  = 8
+        seq_len = 499
         # Enhance conditions with steps remaining
         enhanced_conditions = []
         for b in range(batch_size):
@@ -1418,10 +1142,7 @@ class GraphAwareRouteGenerator(nn.Module):
         
         enhanced_conditions = torch.stack(enhanced_conditions).to(device)  # [batch_size, seq_len, 6]
         
-        # Encode enhanced conditions
-        condition_features = self.condition_encoder(enhanced_conditions)
-        
-        return input_seq, graph_features, condition_features
+        return input_seq, graph_batch, enhanced_conditions
     
     def forward(self, batch_data):
         """
@@ -1434,7 +1155,17 @@ class GraphAwareRouteGenerator(nn.Module):
             predicted_coords: Predicted next coordinates for each input position
         """
         device = next(self.parameters()).device
-        input_seq, graph_features, condition_features = self.prepare_batch_data(batch_data, device)
+        input_seq, graph_batch, enhanced_conditions = self.prepare_batch_data(batch_data, device)
+
+        # Encode graph features
+        graph_features = self.graph_encoder(graph_batch)
+        
+        # Reshape to [batch_size, seq_len, feature_dim]
+        batch_size, seq_len = input_seq.shape[:2]
+        graph_features = graph_features.view(batch_size, seq_len, -1)
+
+        # Encode enhanced conditions
+        condition_features = self.condition_encoder(enhanced_conditions)
         
         # Predict next coordinates
         predicted_coords, _ = self.route_predictor(
@@ -1446,15 +1177,17 @@ class GraphAwareRouteGenerator(nn.Module):
         return predicted_coords
     
     def generate_route(self, graph, start_lat, start_lon, end_lat, end_lon, 
-                       distance, nearest_nodes, subgraphs, max_length=500, device='cpu'):
+                    distance, nearest_nodes, subgraphs, max_length=500, device='cpu'):
         """
-        Generate a complete route autoregressively
+        Generate a complete route autoregressively using delta predictions
         
         Args:
             graph: NetworkX graph for the area
             start_lat, start_lon: Starting coordinates
             end_lat, end_lon: Ending coordinates
             distance: Desired distance of the route
+            nearest_nodes: Nearest nodes to coordinate points
+            subgraphs: Precomputed subgraphs for each step
             max_length: Maximum route length to generate
             device: Device to place tensors on
             
@@ -1462,10 +1195,6 @@ class GraphAwareRouteGenerator(nn.Module):
             generated_route: The generated route coordinates
         """
         with torch.no_grad():
-            # Convert start and end points to graph coordinates
-            # start_node = lat_lon_to_graph_point(start_lat, start_lon, graph)
-            # end_node = lat_lon_to_graph_point(end_lat, end_lon, graph)
-            
             # Initialize the route with the start point
             start_point = torch.tensor([[start_lat, start_lon]], dtype=torch.float32, device=device)
             generated_route = [start_point]
@@ -1480,9 +1209,20 @@ class GraphAwareRouteGenerator(nn.Module):
             # Hidden state for LSTM
             hidden = None
             
-            # Generate points one by one autoregressively
+            # Current point is the start point
             current_point = start_point
             current_lat_lon = np.array([[start_lat, start_lon]])
+            
+            # Track accumulated distance
+            accumulated_distance = 0.0
+            last_coords = np.array([start_lat, start_lon])
+            
+            # Target endpoint as tensor
+            end_point = torch.tensor([[end_lat, end_lon]], device=device)
+            
+            # Keep track of steps where we force movement toward endpoint
+            steps_without_endpoint_progress = 0
+            max_steps_without_progress = 10  # Adjust as needed
             
             for step in range(max_length - 1):
                 # Calculate steps remaining
@@ -1493,9 +1233,6 @@ class GraphAwareRouteGenerator(nn.Module):
                 )
                 
                 # Get the subgraph around current point
-                # center_node = lat_lon_to_graph_point(current_lat_lon[0, 0], current_lat_lon[0, 1], graph)
-                # subgraph = get_subgraph_around_point(graph, center_node, n_hops=self.n_hops)
-                
                 graph_data = subgraphs[step].to(device)
                 
                 # Encode the graph
@@ -1511,16 +1248,51 @@ class GraphAwareRouteGenerator(nn.Module):
                 # Encode conditions
                 condition_features = self.condition_encoder(enhanced_conditions)
                 
-                # Predict next coordinate
-                next_coord_pred, hidden = self.route_predictor(
+                # Predict next coordinate DELTA instead of absolute coordinates
+                next_delta_pred, hidden = self.route_predictor(
                     current_point.unsqueeze(1), 
                     graph_features, 
                     condition_features, 
                     hidden
                 )
                 
-                # Get the predicted coordinate
-                next_point = next_coord_pred.squeeze(1)
+                # Convert delta to absolute by adding to current point
+                next_point = current_point + next_delta_pred.squeeze(1)
+                
+                # Calculate distance to endpoint
+                distance_to_end = torch.norm(next_point - end_point, dim=1).item()
+                
+                # Calculate step distance
+                next_coords = next_point.cpu().numpy()[0]
+                step_distance = haversine_dist(last_coords, next_coords)
+                projected_total_distance = accumulated_distance + step_distance
+                
+                # Evaluate if we should adjust this prediction
+                if projected_total_distance > distance * 1.1 and step > 10:
+                    # We're going too far, reduce step size
+                    delta_vector = next_delta_pred.squeeze(1).cpu().numpy()[0]
+                    norm = np.linalg.norm(delta_vector)
+                    if norm > 0:
+                        # Scale down the delta
+                        scale_factor = 0.5  # Adjust as needed
+                        scaled_delta = delta_vector * scale_factor
+                        next_delta = torch.tensor([scaled_delta], dtype=torch.float32, device=device)
+                        next_point = current_point + next_delta
+                
+                # If we're close to target distance and not near endpoint, bias toward endpoint
+                if projected_total_distance > distance * 0.9 and distance_to_end > 0.001:
+                    steps_without_endpoint_progress += 1
+                    if steps_without_endpoint_progress > max_steps_without_progress:
+                        # Calculate vector toward endpoint
+                        end_vector = end_point.cpu().numpy()[0] - current_lat_lon[0]
+                        if np.linalg.norm(end_vector) > 0:
+                            end_vector = end_vector / np.linalg.norm(end_vector)
+                            # Create delta that moves toward endpoint
+                            step_size = min(0.001, distance_to_end / 2)  # Smaller steps near endpoint
+                            endpoint_delta = end_vector * step_size
+                            next_delta = torch.tensor([endpoint_delta], dtype=torch.float32, device=device)
+                            next_point = current_point + next_delta
+                            steps_without_endpoint_progress = 0
                 
                 # Add to the generated route
                 generated_route.append(next_point)
@@ -1529,13 +1301,21 @@ class GraphAwareRouteGenerator(nn.Module):
                 current_point = next_point
                 current_lat_lon = current_point.cpu().numpy()
                 
-                # Check if we're close enough to the end point
-                end_points = torch.tensor([[end_lat, end_lon]], device=device)
-                distances_to_end = torch.norm(current_point - end_points, dim=1)
+                # Update distance tracking
+                accumulated_distance += step_distance
+                last_coords = next_coords
                 
-                # If all routes are close to their end points, we can stop early
-                if torch.all(distances_to_end < 0.0001):  # Small threshold for lat/lon
+                # Check if we're close enough to the end point and have traveled enough distance
+                end_threshold = 0.0001  # Small threshold for lat/lon
+                
+                # End generation if we're close to the endpoint AND reached target distance
+                if distance_to_end < end_threshold and accumulated_distance >= 0.9 * distance:
                     break
+                
+                # Force end if we're at the last step but not close to endpoint
+                if step == max_length - 2:
+                    # Replace last point with endpoint for clean route completion
+                    generated_route[-1] = end_point
             
             # Concatenate all coordinates
             full_route = torch.cat(generated_route, dim=0)
@@ -1660,38 +1440,41 @@ class RouteModelTrainer:
             verbose=True
         )
 
-    
-    def compute_loss(self, predictions, targets):
+    def compute_loss(self, delta_predictions, delta_targets, absolute_predictions=None, absolute_targets=None, conditions=None):
         """
-        Compute the loss function
+        Compute the loss function for coordinate differences
         
         Args:
-            predictions: Predicted coordinates [batch_size, seq_len, 2]
-            targets: Target coordinates [batch_size, seq_len, 2]
+            delta_predictions: Predicted coordinate differences [batch_size, seq_len-1, 2]
+            delta_targets: Target coordinate differences [batch_size, seq_len-1, 2]
+            absolute_predictions: Reconstructed absolute coordinates [batch_size, seq_len, 2]
+            absolute_targets: Target absolute coordinates [batch_size, seq_len, 2]
+            conditions: Optional tensor containing route conditions
             
         Returns:
             loss: Combined loss value
             loss_components: Dictionary with individual loss components
         """
-        # MSE loss for coordinate prediction
-        mse_loss = F.mse_loss(predictions, targets)
+        batch_size = delta_predictions.shape[0]
         
-        # Initialize direction loss
+        # MSE loss for delta prediction
+        delta_mse_loss = F.mse_loss(delta_predictions, delta_targets)
+        
+        # Initialize other loss components
         direction_loss = 0.0
+        distance_loss = 0.0
+        endpoint_loss = 0.0
         
-        # Additional term: encourage smooth routes by penalizing sudden changes in direction
-        # Get vectors between consecutive predicted points
-        if predictions.size(1) > 1:  # Only compute direction loss if we have at least 2 points
-            vectors = predictions[:, 1:] - predictions[:, :-1]
-            # Get vectors between consecutive target points
-            target_vectors = targets[:, 1:] - targets[:, :-1]
-            
-            # Add small epsilon to avoid division by zero
+        # We need absolute coordinates for some losses
+        if absolute_predictions is not None and absolute_targets is not None:
+            # Direction loss
+            # Since we're predicting deltas directly, these are already our direction vectors
+            # We just need to normalize them
             epsilon = 1e-8
             
             # Normalize vectors to focus on direction, not magnitude
-            vectors_norm = F.normalize(vectors + epsilon, dim=2)
-            target_vectors_norm = F.normalize(target_vectors + epsilon, dim=2)
+            vectors_norm = F.normalize(delta_predictions + epsilon, dim=2)
+            target_vectors_norm = F.normalize(delta_targets + epsilon, dim=2)
             
             # Calculate cosine similarity (higher means more similar direction)
             # We want high similarity, so we take 1 - similarity as our loss
@@ -1699,20 +1482,67 @@ class RouteModelTrainer:
                 torch.sum(vectors_norm * target_vectors_norm, dim=2)
             )
             
-            # Combine the losses
-            # You can adjust these weights based on your priorities
-            combined_loss = mse_loss + .2 * direction_loss
-        else:
-            combined_loss = mse_loss
+            # Distance loss: calculate total route distance
+            # The delta_predictions already represent step lengths in vector form
+            step_lengths = torch.norm(delta_predictions, dim=2)
+            pred_distance = step_lengths.sum(dim=1)
+            
+            # Use target distance from conditions if available, otherwise calculate
+            if conditions is not None and conditions.size(1) > 0:
+                target_distance = conditions[:, 0]
+            else:
+                target_step_lengths = torch.norm(delta_targets, dim=2)
+                target_distance = target_step_lengths.sum(dim=1)
+            
+            # Calculate percentage difference with quadratic penalty
+            percentage_diff = torch.abs(pred_distance - target_distance) / (target_distance + epsilon)
+            distance_loss = torch.mean(percentage_diff**2)
+            
+            # Endpoint incentive
+            if conditions is not None and conditions.size(1) > 3:
+                # Extract endpoint coordinates
+                end_points = conditions[:, 3:5].unsqueeze(1)
+                
+                # Direct penalty for final point's distance to endpoint
+                final_point_distance = torch.norm(absolute_predictions[:, -1] - end_points.squeeze(1), dim=1)
+                endpoint_loss = torch.mean(final_point_distance)
+                
+                # On-pace penalty (similar to before but adjusted for delta prediction)
+                if absolute_predictions.size(1) > 1:
+                    dist_to_goal = torch.norm(absolute_predictions - end_points, dim=2)
+                    
+                    # Cumulative distance calculation
+                    step_lengths_with_0 = torch.cat(
+                        [torch.zeros(batch_size, 1, device=delta_predictions.device), step_lengths], dim=1
+                    )
+                    cumulative_dist = torch.cumsum(step_lengths_with_0, dim=1)
+                    
+                    # Calculate pace metrics
+                    seq_len = absolute_predictions.size(1)
+                    steps_so_far = torch.arange(1, seq_len + 1, device=delta_predictions.device).float()
+                    steps_remaining = seq_len - steps_so_far + 1
+                    
+                    avg_step_size = cumulative_dist / (steps_so_far.unsqueeze(0) + epsilon)
+                    max_possible_remaining = avg_step_size * steps_remaining.unsqueeze(0)
+                    
+                    pace_miss_penalty = torch.relu(dist_to_goal - max_possible_remaining)
+                    endpoint_loss += 0.5 * pace_miss_penalty.mean()
+        
+        # Combine losses - balance between delta accuracy and route properties
+        combined_loss = delta_mse_loss
+        
+        if absolute_predictions is not None:
+            combined_loss += 0.2 * direction_loss + 1.0 * distance_loss + 0.5 * endpoint_loss
         
         # Return the combined loss and individual components for logging
         loss_components = {
-            'mse_loss': mse_loss.item(),
-            'direction_loss': direction_loss if isinstance(direction_loss, float) else direction_loss.item()
+            'mse_loss': delta_mse_loss.item(),
+            'direction_loss': direction_loss if isinstance(direction_loss, float) else direction_loss.item(),
+            'distance_loss': distance_loss if isinstance(distance_loss, float) else distance_loss.item(),
+            'endpoint_loss': endpoint_loss if isinstance(endpoint_loss, float) else endpoint_loss.item()
         }
         
         return combined_loss, loss_components
-    
     def train_epoch(self, epoch):
         """
         Train the model for one epoch with tensor shape checking
@@ -1726,7 +1556,7 @@ class RouteModelTrainer:
         """
         self.model.train()
         total_loss = 0
-        total_loss_components = {'mse_loss': 0, 'direction_loss': 0}
+        total_loss_components = {'mse_loss': 0, 'direction_loss': 0, 'distance_loss': 0, 'endpoint_loss': 0}
         n_batches = 0
         error_count = 0
         
@@ -1763,7 +1593,7 @@ class RouteModelTrainer:
                     targets = batch['target_seq'].to(self.device)
                 
                 # Calculate loss
-                loss, loss_components = self.compute_loss(predicted_coords, targets)
+                loss, loss_components = self.compute_loss(predicted_coords.to(self.device), targets, batch['conditions'].to(self.device))
                 
                 # Backward pass and optimize
                 loss.backward()
@@ -1780,7 +1610,7 @@ class RouteModelTrainer:
                 n_batches += 1
                 
                 # Update progress bar
-                pbar.set_description(f"Train Loss: {loss.item():.4f} (MSE: {loss_components['mse_loss']:.4f}, Direction: {loss_components['direction_loss']:.4f})")
+                pbar.set_description(f"Train Loss: {loss.item():.4f} (MSE: {loss_components['mse_loss']:.4f}, Distance: {loss_components['distance_loss']:.4f})")
                 
                 # Log to TensorBoard (every N batches)
                 if self.tensorboard_writer and batch_idx % 10 == 0:
@@ -1832,7 +1662,7 @@ class RouteModelTrainer:
             
         self.model.eval()
         total_loss = 0
-        total_loss_components = {'mse_loss': 0, 'direction_loss': 0}
+        total_loss_components = {'mse_loss': 0, 'direction_loss': 0, 'distance_loss': 0, 'endpoint_loss': 0}
         n_batches = 0
         error_count = 0
         
@@ -1933,8 +1763,8 @@ class RouteModelTrainer:
             val_loss, val_loss_components = self.validate(epoch)
             if val_loss is not None:
                 val_losses.append(val_loss)
-                print(f"Epoch {epoch+1} - Train Loss: {train_loss:.4f} (MSE: {train_loss_components['mse_loss']:.4f}, Direction: {train_loss_components['direction_loss']:.4f}), "
-                      f"Val Loss: {val_loss:.4f} (MSE: {val_loss_components['mse_loss']:.4f}, Direction: {val_loss_components['direction_loss']:.4f})")
+                print(f"Epoch {epoch+1} - Train Loss: {train_loss:.4f} (MSE: {train_loss_components['mse_loss']:.4f}, Distance: {train_loss_components['distance_loss']:.4f}), "
+                      f"Val Loss: {val_loss:.4f} (MSE: {val_loss_components['mse_loss']:.4f}, Distance: {val_loss_components['distance_loss']:.4f})")
                 
                 # Update learning rate scheduler
                 self.scheduler.step(val_loss)
@@ -2208,6 +2038,163 @@ class RouteEvaluator:
             
         return metrics
     
+
+    def visualize_snap(self, idx, save_path=None):
+        """
+        Visualize a comparison between generated and ground truth routes mapped to OSMnx graph
+        
+        Args:
+            idx: Index of the route to compare
+            save_path: Path to save the visualization (optional)
+            
+        Returns:
+            fig: matplotlib figure
+        """
+        
+        sample = self.test_dataset[idx]
+        route_xy = sample['route'].numpy()
+        start_lat, start_lon = route_xy[0]
+        end_lat, end_lon = route_xy[-1]
+        target_distance = sample['conditions'][0].item()
+        
+        # Calculate actual distance
+        actual_distance = get_route_distance(list(route_xy[:,0]), list(route_xy[:,1]))
+        
+        # Generate route with graph encoding enabled/disabled as configured
+        with torch.no_grad():
+            generated_route = self.model.generate_route(
+                sample['graph'],
+                start_lat, start_lon,
+                end_lat, end_lon,
+                target_distance,
+                sample['nearest_nodes'],
+                sample['subgraph'],
+                device=self.device,
+            ).cpu().numpy()
+        
+        # Calculate generated distance
+        generated_distance = get_route_distance(list(generated_route[:,0]), list(generated_route[:,1]))
+        
+        # Calculate distance error
+        if actual_distance > 0:
+            distance_error = abs(generated_distance - actual_distance) / actual_distance * 100  # as percentage
+        else:
+            distance_error = float('inf')
+        
+        # Create figure
+        fig, ax = plt.subplots(figsize=(10, 10))
+        
+        if not self.disable_graph:
+            try:
+                # Get the graph
+                G = sample['graph']
+                
+                # Plot base graph
+                ox.plot_graph(G, ax=ax, show=False, close=False, 
+                            edge_color='gray', edge_alpha=0.2, node_size=0)
+                
+                # Map ground truth route to graph
+                gt_nodes_path = []
+                for i, (lat, lon) in enumerate(route_xy):
+                    # Find the nearest node to each point in the route
+                    nearest_node = ox.distance.nearest_nodes(G, lon, lat)
+                    gt_nodes_path.append(nearest_node)
+                
+                # Remove duplicates while preserving order
+                gt_nodes_path = list(dict.fromkeys(gt_nodes_path))
+                
+                # Find paths between consecutive nodes in the graph
+                gt_graph_path = []
+                for i in range(len(gt_nodes_path) - 1):
+                    try:
+                        # Find shortest path between consecutive nodes
+                        path = ox.shortest_path(G, gt_nodes_path[i], gt_nodes_path[i+1], weight='length')
+                        gt_graph_path.extend(path)
+                    except nx.NetworkXNoPath:
+                        # If no path exists, just add the nodes
+                        gt_graph_path.extend([gt_nodes_path[i], gt_nodes_path[i+1]])
+                
+                # Do the same for generated route
+                gen_nodes_path = []
+                for i, (lat, lon) in enumerate(generated_route):
+                    # Find the nearest node to each point in the route
+                    nearest_node = ox.distance.nearest_nodes(G, lon, lat)
+                    gen_nodes_path.append(nearest_node)
+                
+                # Remove duplicates while preserving order
+                gen_nodes_path = list(dict.fromkeys(gen_nodes_path))
+                
+                # Find paths between consecutive nodes in the graph
+                gen_graph_path = []
+                for i in range(len(gen_nodes_path) - 1):
+                    try:
+                        # Find shortest path between consecutive nodes
+                        path = ox.shortest_path(G, gen_nodes_path[i], gen_nodes_path[i+1], weight='length')
+                        gen_graph_path.extend(path)
+                    except nx.NetworkXNoPath:
+                        # If no path exists, just add the nodes
+                        gen_graph_path.extend([gen_nodes_path[i], gen_nodes_path[i+1]])
+                
+                # Plot the routes as network paths
+                ox.plot_graph_route(G, gt_graph_path, ax=ax, route_color='blue', 
+                                    route_linewidth=4, route_alpha=0.7, show=False, close=False, 
+                                    orig_dest_size=0)
+                
+                ox.plot_graph_route(G, gen_graph_path, ax=ax, route_color='red', 
+                                    route_linewidth=2, route_alpha=0.7, show=False, close=False,
+                                    orig_dest_size=0)
+                
+                # Calculate distances on graph
+                gt_graph_distance = sum(ox.utils_graph.get_route_edge_attributes(G, gt_graph_path, 'length')) / 1000  # km
+                gen_graph_distance = sum(ox.utils_graph.get_route_edge_attributes(G, gen_graph_path, 'length')) / 1000  # km
+                
+                # Calculate graph distance error
+                if gt_graph_distance > 0:
+                    graph_distance_error = abs(gen_graph_distance - gt_graph_distance) / gt_graph_distance * 100  # as percentage
+                else:
+                    graph_distance_error = float('inf')
+                
+            except Exception as e:
+                print(f"Warning: Error in graph routing: {e}")
+                # Fall back to original plotting method
+                ax.plot(route_xy[:, 1], route_xy[:, 0], 'b-', linewidth=2, label='Ground Truth')
+                ax.plot(generated_route[:, 1], generated_route[:, 0], 'r-', linewidth=2, label='Generated')
+                gt_graph_distance = actual_distance
+                gen_graph_distance = generated_distance
+                graph_distance_error = distance_error
+        else:
+            # If graph is disabled, use original plotting method
+            ax.plot(route_xy[:, 1], route_xy[:, 0], 'b-', linewidth=2, label='Ground Truth')
+            ax.plot(generated_route[:, 1], generated_route[:, 0], 'r-', linewidth=2, label='Generated')
+            gt_graph_distance = actual_distance
+            gen_graph_distance = generated_distance
+            graph_distance_error = distance_error
+        
+        # Plot start and end points
+        ax.plot(start_lon, start_lat, 'go', markersize=10, label='Start')
+        ax.plot(end_lon, end_lat, 'mo', markersize=10, label='End')
+        
+        # Add legend and title
+        ax.legend()
+        title = f'Route Comparison\n'
+        title += f'Target: {target_distance:.2f} km\n'
+        title += f'Linear - Ground Truth: {actual_distance:.2f} km, Generated: {generated_distance:.2f} km, Error: {distance_error:.1f}%\n'
+        
+        if not self.disable_graph:
+            title += f'Graph - Ground Truth: {gt_graph_distance:.2f} km, Generated: {gen_graph_distance:.2f} km, Error: {graph_distance_error:.1f}%'
+        
+        if self.disable_graph:
+            title += ' (Graph Disabled)'
+            
+        ax.set_title(title)
+        
+        # Save figure if needed
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            
+        return fig
+
+    
     def visualize_route_comparison(self, idx, save_path=None):
         """
         Visualize a comparison between generated and ground truth routes
@@ -2222,6 +2209,7 @@ class RouteEvaluator:
         
         sample = self.test_dataset[idx]
         route_xy = sample['route'].numpy()
+        # print(route_xy)
         start_lat, start_lon = route_xy[0]
         end_lat, end_lon = route_xy[-1]
         target_distance = sample['conditions'][0].item()
@@ -2331,11 +2319,14 @@ def main():
                         help='Clear the graph cache before loading')
     parser.add_argument('--num_samples', type=int, default=1000,
                         help='Number of samples to load for training')
+    parser.add_argument('--snap' ,action = 'store_true')
     args = parser.parse_args()
     
     # Set random seed
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
+
+    snap = args.snap
     
     # Create checkpoint directory
     os.makedirs(args.checkpoint_dir, exist_ok=True)
@@ -2442,7 +2433,11 @@ def main():
                 viz_path = os.path.join(viz_dir, f'route_comparison_{i}.png')
                 
                 try:
-                    fig = evaluator.visualize_route_comparison(idx, save_path=viz_path)
+                    if snap:
+                        fig = evaluator.sn
+                    
+                    else:
+                        fig = evaluator.visualize_route_comparison(idx, save_path=viz_path)
                     plt.close(fig)
                     print(f"  Generated visualization {i+1}/5: {viz_path}")
                 except Exception as e:
@@ -2526,7 +2521,7 @@ def profiler_main():
     # Set up minimal arguments for profiling
     class Args:
         data_path = "data/processed_for_graph.csv"  # Replace with your actual path
-        batch_size = 4  # Small batch size for profiling
+        batch_size = 8  # Small batch size for profiling
         hidden_dim = 256
         n_hops = 2
         device = 'mps'
